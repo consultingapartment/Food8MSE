@@ -1,0 +1,42 @@
+name: prices
+
+# Ажлын өдөр бирж хаагдсаны дараа (Улаанбаатарын 17:30) сүүлийн хаалтын ханшийг татаж шинжилгээг шинэчилнэ.
+on:
+  schedule:
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: analyze
+  cancel-in-progress: false
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Ханш татаж шинжилгээг шинэчлэх
+        run: python -m mse_analysis -v --fetch-prices
+      - name: Хариуны түүхий өгөгдлийг хадгалах (алдааг оношлоход)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-trading-responses
+          path: inputs/_raw/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Өөрчлөлтийг commit хийх
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add inputs/market.csv inputs/prices "reports/FOOD analysis.xlsx"
+          git diff --cached --quiet || git commit -m "prices: сүүлийн хаалтын ханш шинэчлэв"
+          git push
