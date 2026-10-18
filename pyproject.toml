@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mse-financials"
+version = "1.1.0"
+description = "МХБ (open.mse.mn)-ээс хүнсний компаниудын санхүүгийн тайланг татаж нэг Excel болгох"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31", "beautifulsoup4>=4.12", "openpyxl>=3.1", "xlrd==2.0.1"]
+
+[project.scripts]
+mse-financials = "mse_financials.cli:main"
+mse-analysis = "mse_analysis.cli:main"
+
+[tool.setuptools]
+packages = ["mse_financials", "mse_analysis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
