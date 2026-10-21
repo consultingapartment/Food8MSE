@@ -30,14 +30,14 @@ jobs:
       - name: МХБ-ээс хуулсан арилжааны түүх байвал inputs/prices руу нэмэх
         run: |
           if [ -f inputs/trade_history.txt ]; then
-            python -m mse_analysis -v --import-trades inputs/trade_history.txt
+            python -m mse_analysis -v --import-trades inputs/trade_history.txt --charts
           else
-            python -m mse_analysis -v
+            python -m mse_analysis -v --charts
           fi
       - name: Өөрчлөлтийг commit хийх
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add "reports/FOOD analysis.xlsx" inputs/prices
+          git add "reports/FOOD analysis.xlsx" reports/charts inputs/prices
           git diff --cached --quiet || git commit -m "analysis: шинжилгээ шинэчлэв"
           git push

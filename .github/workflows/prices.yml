@@ -1,9 +1,10 @@
 name: prices
 
-# Ажлын өдөр бирж хаагдсаны дараа (Улаанбаатарын 17:30) сүүлийн хаалтын ханшийг татаж шинжилгээг шинэчилнэ.
+# Мягмар–Бямба өглөө 09:00 (Улаанбаатар) — өмнөх арилжааны өдрийн хаалт арилжааны түүхэнд орсны дараа
+# ханшийг татаж, шинжилгээ хийж, харьцуулсан зураг + Excel-ийг Telegram-д илгээнэ.
 on:
   schedule:
-    - cron: "30 9 * * 1-5"
+    - cron: "0 1 * * 2-6"
   workflow_dispatch:
 
 permissions:
@@ -23,8 +24,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Ханш татаж шинжилгээг шинэчлэх
-        run: python -m mse_analysis -v --fetch-prices
+      - name: Ханш татаж шинжилгээ хийх, зураг гаргаж Telegram-д илгээх
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m mse_analysis -v --fetch-prices --charts --notify
       - name: Хариуны түүхий өгөгдлийг хадгалах (алдааг оношлоход)
         if: always()
         uses: actions/upload-artifact@v4
@@ -37,6 +41,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add inputs/market.csv inputs/prices "reports/FOOD analysis.xlsx"
+          git add inputs/market.csv inputs/prices "reports/FOOD analysis.xlsx" reports/charts
           git diff --cached --quiet || git commit -m "prices: сүүлийн хаалтын ханш шинэчлэв"
           git push

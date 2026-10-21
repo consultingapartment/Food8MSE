@@ -27,9 +27,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # заавал биш: зөвхөн скан PDF-ийн нөөц унших
         run: python -m mse_financials -v --if-due --notify
-      - name: Шинжилгээг шинэчлэх (FOOD analysis.xlsx)
-        run: python -m mse_analysis -v
+      - name: Шинжилгээг шинэчлэх, зураг гаргаж Telegram-д илгээх
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m mse_analysis -v --charts --notify
       - name: Өөрчлөлтийг commit хийх
         run: |
           git config user.name "github-actions"
