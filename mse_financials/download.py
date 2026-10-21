@@ -57,8 +57,16 @@ def download_reports(client: Client, ticker: str, code: int, dest: Path,
 
     out: list[Downloaded] = []
     counter: dict[str, int] = {}
+    # Excel хувилбартай үеийн PDF-ийг татахгүй (Excel найдвартай, PDF/OCR удаан, алдаатай). Excel холбоос нь үнэндээ
+    # PDF байвал (sniff_ext) тэр үе PDF-ээр л үлдэнэ.
+    has_excel = {l.period for l in links if l.kind != "pdf" and l.period}
+    got_pdf_as_excel: set = set()
+    links = sorted(links, key=lambda l: l.kind == "pdf")            # Excel эхэлж, PDF сүүлд
     for link in links:
         if link.kind == "pdf" and not include_pdf:
+            continue
+        if link.kind == "pdf" and link.period in has_excel and link.period not in got_pdf_as_excel:
+            log.debug("%s %s: Excel хувилбартай тул PDF татсангүй", ticker, link.period.label)
             continue
         if since and link.period and quarter_end(link.period) <= since:
             continue
@@ -71,6 +79,8 @@ def download_reports(client: Client, ticker: str, code: int, dest: Path,
             resp = client.get(link.url)
         except FetchError as exc:
             log.warning("  алгаслаа: %s", exc)
+            if link.kind != "pdf" and link.period:
+                got_pdf_as_excel.add(link.period)                     # Excel татагдсангүй — PDF-ээр нөхнө
             continue
         ext = sniff_ext(resp.content, Path(urlparse(link.url).path).suffix.lower() or ".xls")
         path = folder / (stem + ext)
@@ -78,5 +88,7 @@ def download_reports(client: Client, ticker: str, code: int, dest: Path,
         manifest[link.url] = path.name
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), "utf-8")
         out.append(Downloaded(ticker, path, link.url, link.period, new=True, filed=link.filed))
+        if link.kind != "pdf" and ext == ".pdf" and link.period:
+            got_pdf_as_excel.add(link.period)                         # "Excel" нь PDF болж таарсан — жинхэнэ PDF-ийг ч татна
         client.sleep()
     return out

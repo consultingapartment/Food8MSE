@@ -40,6 +40,12 @@ def import_trades(txt: Path, inputs: Path) -> list[str]:
     return done
 
 
+def _alert(args, text: str) -> None:
+    if args.notify:
+        from mse_financials.notify import send_telegram
+        send_telegram(text)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="mse_analysis", description="МХБ-ийн хүнсний 8 компанийн шинжилгээ -> Excel")
     p.add_argument("--reports", type=Path, default=Path("reports/FOOD mse.xlsx"), help="нэгтгэсэн санхүүгийн тайлан")
@@ -50,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--import-trades", type=Path, metavar="TXT", help="МХБ-ээс хуулсан арилжааны түүхийн текстийг inputs/prices руу оруулна")
     p.add_argument("--fetch-prices", action="store_true",
                    help="open.mse.mn-аас хаалтын ханшийн түүхийг татаж inputs/-д бичээд шинжилнэ")
+    p.add_argument("--charts", type=Path, nargs="?", const=Path("reports/charts"), default=Path("reports/charts"), metavar="DIR",
+                   help="Харьцуулсан зураг, инфографикийн хавтас (анхдагч: reports/charts)")
+    p.add_argument("--no-charts", action="store_true", help="Зураг, инфографик үүсгэхгүй")
+    p.add_argument("--notify", action="store_true",
+                   help="Хураангуй, зураг, Excel-ийг Telegram-д илгээнэ (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID хэрэгтэй)")
     p.add_argument("--no-technical", action="store_true", help="техник шинжилгээг алгасна")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
@@ -62,9 +73,11 @@ def main(argv: list[str] | None = None) -> int:
             history = live.fetch(args.inputs / "_raw", today)
         except Exception as e:                                   # сүлжээ, сайтын өөрчлөлт
             log.error("Ханш татаж чадсангүй: %s", e)
+            _alert(args, f"❌ МХБ хүнс — {today}: ханш татаж чадсангүй ({type(e).__name__})")
             return 1
         if not history:
             log.error("Ханшийн мөр олдсонгүй — татсан хуудсыг %s-д хадгалсан, шалгана уу", args.inputs / "_raw")
+            _alert(args, f"❌ МХБ хүнс — {today}: ханшийн мөр олдсонгүй (сайтын бүтэц өөрчлөгдсөн байж магадгүй), файл өөрчлөгдөөгүй")
             return 1
         for line in live.apply(history, args.inputs):
             log.info("ханш: %s", line)
@@ -89,8 +102,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for w in res.warnings:
         log.warning(w)
-    build(res, args.out)
+    pngs: list[Path] = []
+    if not args.no_charts:
+        from . import charts
+        pngs = charts.build(res, args.charts)
+        log.info("Зураг, инфографик: %d файл (%s)", len(pngs), args.charts)
+    build(res, args.out, pngs)                                   # зургууд Excel-ийн «Инфографик» хуудсанд орно
     log.info("Бичигдлээ: %s (%d компани)", args.out, len(res.tickers))
+    if args.notify:
+        from .notify import notify
+        notify(res, pngs, args.out)
     return 0
 
 

@@ -427,3 +427,28 @@ def test_cli_run_failure_is_notified_and_exit_1(tmp_path, site, monkeypatch):
     rc = cli.main(["--tickers", "APU", "--out", str(tmp_path / "o.xlsx"), "--reports-dir", str(tmp_path / "rep"),
                    "--notify", "--date", "2026-10-12"])
     assert rc == 1 and "❌ APU" in sent[0]
+
+
+def test_pdf_is_not_downloaded_when_excel_exists_for_same_period(tmp_path, site):
+    site["/securities/135/tab/financials"] = (
+        f'<table><tr><td>2025</td><td>4</td><td>2026-03-01</td><td><a href="{H}/13520254report.pdf">p</a></td>'
+        f'<td><a href="{H}/13520254report.xlsx">x</a></td></tr></table>').encode()
+    site["/uploads/finance_reports/13520254report.pdf"] = b"%PDF-1.4"
+    c = FakeClient(site)
+    run(["SUU"], tmp_path / "rep", tmp_path / "o.xlsx", day=DAY, client=c)
+    assert any(x.endswith("13520254report.xlsx") for x in c.calls)
+    assert not any(x.endswith("13520254report.pdf") for x in c.calls)       # Excel байгаа тул PDF/OCR хэрэггүй
+
+
+def test_pdf_is_downloaded_when_period_has_only_pdf_or_excel_is_really_a_pdf(tmp_path, site):
+    site["/securities/135/tab/financials"] = (
+        f'<table><tr><td>2025</td><td>4</td><td>d</td><td><a href="{H}/13520254report.pdf">p</a></td></tr>'
+        f'<tr><td>2025</td><td>2</td><td>d</td><td><a href="{H}/13520252report.pdf">p</a></td>'
+        f'<td><a href="{H}/13520252report.xls">x</a></td></tr></table>').encode()
+    site["/uploads/finance_reports/13520254report.pdf"] = b"%PDF-1.4"
+    site["/uploads/finance_reports/13520252report.pdf"] = b"%PDF-1.4 real"
+    site["/uploads/finance_reports/13520252report.xls"] = b"%PDF-1.4 disguised"           # ".xls" нэртэй боловч PDF
+    c = FakeClient(site)
+    run(["SUU"], tmp_path / "rep", tmp_path / "o.xlsx", day=DAY, client=c)
+    assert any(x.endswith("13520254report.pdf") for x in c.calls)               # зөвхөн PDF-тэй үе → татна
+    assert any(x.endswith("13520252report.pdf") for x in c.calls)               # Excel нь PDF болсон → PDF-ийг ч татна

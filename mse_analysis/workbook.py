@@ -101,7 +101,7 @@ def _fmt_for(kind: str) -> str:
     return {"x": "x", "pct": "pct", "money": "money", "days": "days"}.get(kind, "n2")
 
 
-def build(res: Result, out: Path) -> Path:
+def build(res: Result, out: Path, images: list[Path] | None = None) -> Path:
     wb = Workbook()
     wb.remove(wb.active)
     T = res.tickers
@@ -121,9 +121,28 @@ def build(res: Result, out: Path) -> Path:
     _forecast(wb, res)
     if any(R[t]["tech"] for t in T):
         _technical(wb, res)
+    if images:
+        _gallery(wb, images)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
+
+
+def _gallery(wb, images: list[Path]) -> None:
+    """Инфографик хуудас: зураг бүрийг дарааллаар нь доош байрлуулна."""
+    from openpyxl.drawing.image import Image as XLImage
+    ws = wb.create_sheet("Инфографик")
+    ws.sheet_properties.tabColor = "1F3864"
+    ws.sheet_view.showGridLines = False
+    ws["A1"] = "ИНФОГРАФИК — бүх компанийн харьцуулалт (шинжилгээний үр дүнгээр автоматаар гарсан)"
+    ws["A1"].font = Font(bold=True, size=13)
+    row = 3
+    for p in images:
+        img = XLImage(str(p))
+        k = 1300 / img.width
+        img.width, img.height = int(img.width * k), int(img.height * k)
+        ws.add_image(img, f"A{row}")
+        row += int(img.height / 20) + 3
 
 
 # ------------------------------------------------------------------ 1. Дүгнэлт

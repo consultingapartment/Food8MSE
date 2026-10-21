@@ -260,7 +260,7 @@ needs_data = pytest.mark.skipif(not (ROOT / "reports" / "FOOD mse.xlsx").exists(
 def test_end_to_end_workbook(tmp_path):
     out = tmp_path / "a.xlsx"
     assert main(["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(ROOT / "inputs"),
-                 "--out", str(out), "--date", "2026-10-17"]) == 0
+                 "--out", str(out), "--date", "2026-10-17", "--charts", str(tmp_path / "png")]) == 0
     wb = load_workbook(out)
     for name in ("Дүгнэлт", "Оноо", "Харьцаа", "Харьцааны түүх", "DuPont", "Түүхэн хандлага", "Задаргаа", "Эрсдэл", "Үнэлгээ",
                  "Graham ба ногдол", "Үнэлгээ 2.0", "Эзэмшил", "ЦА прогноз", "Техник", "ТА APU"):
@@ -282,7 +282,8 @@ def test_end_to_end_workbook(tmp_path):
 
 @needs_data
 def test_cli_subset_and_errors(tmp_path):
-    base = ["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(ROOT / "inputs"), "--out", str(tmp_path / "s.xlsx")]
+    base = ["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(ROOT / "inputs"), "--out", str(tmp_path / "s.xlsx"),
+            "--charts", str(tmp_path / "png")]       # хэзээ ч жинхэнэ reports/charts-ийг дарахгүй
     assert main(base + ["--tickers", "APU", "SUU", "--no-technical"]) == 0
     wb = load_workbook(tmp_path / "s.xlsx")
     assert "Техник" not in wb.sheetnames and "ТА APU" not in wb.sheetnames
@@ -341,5 +342,116 @@ def test_fetch_prices_fails_cleanly_without_touching_files(tmp_path, monkeypatch
     from mse_analysis import live
     (tmp_path / "market.csv").write_text("ticker,price,price_date,shares,dps,dps_year\nAPU,1,2026-07-20,1,1,2025\n")
     monkeypatch.setattr(live, "fetch", lambda raw, today, client=None: {})
-    assert main(["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(tmp_path), "--fetch-prices"]) == 1
+    assert main(["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(tmp_path), "--fetch-prices", "--charts", str(tmp_path / "png")]) == 1
     assert "APU,1,2026-07-20" in (tmp_path / "market.csv").read_text()
+
+
+# ------------------------------------------------------------------ зураг, Telegram
+def test_charts_build_two_pngs(tmp_path):
+    from datetime import date as _d
+    from mse_analysis import charts
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
+    out = charts.build(res, tmp_path)
+    assert [p.name for p in out] == ["valuation.png", "ratios.png", "annual.png", "halfyear.png", "cost_1000.png",
+                                     "price_tags.png", "health_check.png", "seasonality.png", "ownership.png"]
+    assert all(p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and p.stat().st_size > 20000 for p in out)
+
+
+def test_notify_summary_and_sends(tmp_path, monkeypatch):
+    from datetime import date as _d
+    from mse_analysis import notify as n
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
+    text = n.format_summary(res)
+    assert text.startswith("📈 МХБ хүнс — 2026-10-19") and "APU" in text and "P/E" in text and "зөвлөгөө биш" in text
+    assert len(text) < 3900 and "MSIAA" not in text
+    sent = []
+    monkeypatch.setattr(n, "send_telegram", lambda t: sent.append("text") or True)
+    monkeypatch.setattr(n, "send_photos", lambda ps, caption="": sent.append(f"album{len(list(ps))}") or True)
+    x = tmp_path / "a.xlsx"
+    x.write_bytes(b"x")
+    names = ["valuation.png", "ratios.png", "annual.png", "halfyear.png", "cost_1000.png"]
+    assert n.notify(res, [tmp_path / nm for nm in names], x) is True
+    assert sent == ["text", "album2", "album3"]               # Excel Telegram-д явахгүй               # 1) харьцаа/үнэлгээ, 2) инфографик — тусдаа албом
+    monkeypatch.setattr(n, "send_telegram", lambda t: False)       # токен байхгүй: юу ч илгээхгүй
+    sent.clear()
+    assert n.notify(res, [], x) is False and sent == []
+
+
+def test_send_file_uses_photo_or_document_endpoint(tmp_path):
+    from mse_financials.notify import send_file
+
+    class S:
+        calls = []
+        def post(self, url, **kw):
+            S.calls.append(url)
+            class R:
+                def raise_for_status(self): pass
+            return R()
+    f = tmp_path / "a.png"
+    f.write_bytes(b"x")
+    assert send_file(f, photo=True, token="T", chat_id="1", session=S()) is True
+    assert send_file(f, token="T", chat_id="1", session=S()) is True
+    assert S.calls[0].endswith("/sendPhoto") and S.calls[1].endswith("/sendDocument")
+    assert send_file(f, token="", chat_id="") is False
+
+
+def test_send_photos_album_chunks_of_ten(tmp_path):
+    from mse_financials.notify import send_photos
+
+    class S:
+        calls = []
+        def post(self, url, **kw):
+            S.calls.append((url, len(kw["files"])))
+            class R:
+                def raise_for_status(self): pass
+            return R()
+    fs = []
+    for i in range(12):
+        f = tmp_path / f"{i}.png"
+        f.write_bytes(b"x")
+        fs.append(f)
+    assert send_photos(fs, "c", token="T", chat_id="1", session=S()) is True
+    assert [c[1] for c in S.calls] == [10, 2] and all(c[0].endswith("/sendMediaGroup") for c in S.calls)
+    assert send_photos(fs, token="", chat_id="") is False
+
+
+# ------------------------------------------------------------------ үеийн харьцуулалт (жил, хагас жил, улирал)
+def test_periods_flows_and_comparisons():
+    from mse_analysis import periods as P
+    from datetime import date as _d
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
+    c = res.companies["TUM"]
+    h1, fy = P.value(c, P.Per("half", 2025, 1), "revenue"), P.value(c, P.Per("year", 2025, 0), "revenue")
+    h2 = P.value(c, P.Per("half", 2025, 2), "revenue")
+    assert h2 == fy - h1                                              # H2 = FY − H1
+    assert P.Per("half", 2026, 1).prev() == P.Per("half", 2025, 2) and P.Per("quarter", 2026, 1).prev() == P.Per("quarter", 2025, 4)
+    assert P.Per("quarter", 2026, 2).yoy() == P.Per("quarter", 2025, 2)
+    # TCK-д 2026 оны тайлан алга → тооцохгүй (зохиож бөглөхгүй), шалтгааныг нэрлэнэ
+    assert P.value(res.companies["TCK"], P.Per("half", 2026, 1), "revenue") is None
+    assert "2026 оны тайлан алга" in P.missing_detail(res.companies["TCK"], P.Per("half", 2026, 1))
+    g = res.companies["GAZR"]
+    assert P.value(g, P.Per("half", 2025, 1), "revenue") == pytest.approx(23375174.60881, abs=0.01) and P.value(g, P.Per("half", 2025, 2), "revenue") is not None
+    assert P.change(5, 0) == (None, "алдагдлаас ашигт шилжсэн") and P.change(-1, -2) == (None, "алдагдалтай хэвээр")
+    assert abs(P.change(110, 100)[0] - 0.1) < 1e-9
+    tgt = P.target(res.companies, "half")
+    assert tgt == P.Per("half", 2026, 1)
+
+
+def test_monthly_returns_skips_untraded_months():
+    from datetime import date as _d
+    from mse_analysis.infographics import monthly_returns
+    from mse_analysis.prices import Bar
+    bars = []
+    for y in (2024, 2025, 2026):
+        for m in range(1, 13):
+            if (y, m) >= (2026, 11):
+                break
+            if y == 2025 and m == 3:
+                continue                                              # 3-р сард арилжаа байхгүй
+            bars += [Bar(_d(y, m, d), 100.0 + m, 100.0 + m, 100.0 + m, 100.0 + m, 1, 1) for d in range(1, 29)]
+    mr = monthly_returns(bars)
+    assert len(mr[3]) == 2 and len(mr[4]) == 2                       # 2025 оны 3, 4-р сарын өгөөж хасагдсан
+    assert all(len(v) >= 2 for v in mr.values())

@@ -48,6 +48,57 @@ def send_telegram(text: str, token: str | None = None, chat_id: str | None = Non
     return True
 
 
+def send_file(path, caption: str = "", photo: bool = False, token: str | None = None,
+              chat_id: str | None = None, session: requests.Session | None = None) -> bool:
+    """Файл (эсвэл `photo=True` үед зураг) илгээнэ. Хэзээ ч exception шиддэггүй; тохиргоогүй бол False."""
+    token = token if token is not None else os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    method, field = ("sendPhoto", "photo") if photo else ("sendDocument", "document")
+    try:
+        with open(path, "rb") as fh:
+            resp = (session or requests).post(f"https://api.telegram.org/bot{token}/{method}",
+                                              data={"chat_id": chat_id, "caption": caption[:1000]},
+                                              files={field: fh}, timeout=60)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Telegram файл илгээж чадсангүй (%s)", type(exc).__name__)   # URL (token) логлохгүй
+        return False
+    log.info("Telegram: %s илгээгдлээ", getattr(path, "name", path))
+    return True
+
+
+def send_photos(paths, caption: str = "", token: str | None = None, chat_id: str | None = None,
+                session: requests.Session | None = None) -> bool:
+    """Олон зургийг албом (sendMediaGroup, 10 хүртэл) хэлбэрээр илгээнэ. Хэзээ ч exception шиддэггүй."""
+    import json
+    token = token if token is not None else os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "")
+    paths = list(paths)
+    if not token or not chat_id or not paths:
+        return False
+    ok = True
+    for i in range(0, len(paths), 10):
+        chunk = paths[i:i + 10]
+        media = [{"type": "photo", "media": f"attach://p{k}"} for k in range(len(chunk))]
+        if i == 0 and caption:
+            media[0]["caption"] = caption[:1000]
+        handles = [open(p, "rb") for p in chunk]
+        try:
+            resp = (session or requests).post(f"https://api.telegram.org/bot{token}/sendMediaGroup",
+                                              data={"chat_id": chat_id, "media": json.dumps(media)},
+                                              files={f"p{k}": h for k, h in enumerate(handles)}, timeout=120)
+            resp.raise_for_status()
+        except Exception as exc:
+            log.warning("Telegram албом илгээж чадсангүй (%s)", type(exc).__name__)
+            ok = False
+        finally:
+            for h in handles:
+                h.close()
+    return ok
+
+
 def _warnings_block(warnings: list[str], limit: int = 8) -> list[str]:
     if not warnings:
         return []

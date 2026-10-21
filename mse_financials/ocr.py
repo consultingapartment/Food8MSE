@@ -253,7 +253,7 @@ def check_income(by: dict[str, float]) -> list[str]:
     return [f"{n}: {a:,.2f} ≠ {b:,.2f}" for n, a, b in checks if not _close(a, b)]
 
 
-def build_sheets(records: list[Record]) -> dict[str, list[list[Any]]]:
+def build_sheets(records: list[Record], strict_prev: bool = True) -> dict[str, list[list[Any]]]:
     """Дарааллаар: баланс (2.4 мөрөөр төгсөнө), дараа нь ОДТ-ийн 28 мөр (дугаарыг байрлалаар нь). Шалгалтад унавал ScannedPdfError."""
     bs: dict[str, list[float]] = {}
     rest: list[Record] = []
@@ -276,8 +276,13 @@ def build_sheets(records: list[Record]) -> dict[str, list[list[Any]]]:
 
     errors: list[str] = []
     for col, name in ((0, "эхний"), (1, "эцсийн")):
-        errors += [f"баланс/{name}: {e}" for e in check_balance({c: v[col] for c, v in bs.items()})]
-        errors += [f"ОДТ/{name}: {e}" for e in check_income({c: v[col] for c, (_, v) in zip(IS_CODES, inc)})]
+        found = [f"баланс/{name}: {e}" for e in check_balance({c: v[col] for c, v in bs.items()})]
+        found += [f"ОДТ/{name}: {e}" for e in check_income({c: v[col] for c, (_, v) in zip(IS_CODES, inc)})]
+        if col == 0 and not strict_prev and found:
+            log.warning("Эх тайлангийн өмнөх үеийн багана нийлбэрээрээ таарахгүй байна (%s) — тайлант үеийн баганыг л шалгалаа",
+                        "; ".join(found[:2]))
+            continue
+        errors += found
     if errors:
         raise ScannedPdfError("OCR-оор уншсан тоо нийлбэрийн шалгалтад унав — " + "; ".join(errors[:4]))
 
@@ -324,6 +329,9 @@ def repair(records: list[Record], locs: list) -> Optional[dict[str, list[list[An
 def ocr_sheets(path) -> dict[str, list[list[Any]]]:
     """Скан PDF -> {"СБД", "ОДТ"} (pdf.read_pdf_sheets-тэй ижил хэлбэр)."""
     if not tesseract_path():
+        from . import vision
+        if vision.available():
+            return _vision_sheets(path, "tesseract суугаагүй")
         raise ScannedPdfError("Скан PDF: OCR-д `tesseract` хэрэгтэй (Ubuntu: apt install tesseract-ocr)")
     try:
         import numpy as np
@@ -358,5 +366,24 @@ def ocr_sheets(path) -> dict[str, list[list[Any]]]:
         log.warning("%s: скан PDF-г OCR-оор уншлаа (%d dpi); нийлбэрийн бүх шалгалт өнгөрсөн. Excel хувилбар гарвал "
                     "түүнийг илүүд үзнэ", Path(path).name, dpi)
         return sheets
+    from . import vision
+    if vision.available():
+        return _vision_sheets(path, last_error)
+    raise ScannedPdfError(last_error)
+
+
+def _vision_sheets(path, last_error: str) -> dict[str, list[list[Any]]]:
+    """tesseract амжилтгүй үед харааны загвараар унших (нийлбэрийн шалгалт заавал өнгөрнө)."""
+    from . import vision
+    recs = vision.read_records(Path(path))
+    if recs:
+        try:
+            sheets = build_sheets(recs, strict_prev=False)
+        except ScannedPdfError as exc:
+            last_error = f"{last_error}; харааны уншилт: {exc}"
+        else:
+            log.warning("%s: скан PDF-г харааны загвараар уншлаа; нийлбэрийн шалгалт өнгөрсөн. Excel хувилбар гарвал "
+                        "түүнийг илүүд үзнэ", Path(path).name)
+            return sheets
     raise ScannedPdfError(last_error)
 
