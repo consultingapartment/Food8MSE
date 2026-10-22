@@ -1,165 +1,129 @@
-"""МХБ-ийн нээлттэй өгөгдлийн сайт (open.mse.mn)-аас тухайн өдрийн арилжааны мэдээллийг татна.
+"""Арилжааны түүх: МХБ-ийн хуулбарласан текст (food_8_trade_history.txt) эсвэл цэвэр CSV уншина.
 
-Хаяг: `https://open.mse.mn/securities/{id}/tab/tradeinfo` — "Арилжааны мэдээлэл" дэд таб (Үндсэн харагдах байдал).
-Тухайн өдрийн нээлт, хаалтын ханшийг шууд авч одоо байгаа түүхтэй нэгтгэнэ.
+Текстийн бүтэц: тикерийн гарчиг мөр (`apu`, `MFC` ...), дараа нь `№ \tДээд\tДоод\tНээлт\tХаалт\tШирхэг\tҮнийн дүн\tОгноо`
+мөрүүд (шинэ → хуучин). Нэг гарчгийн дор хоёр компани дараалан орсон байж болно (MFC-ийн дор TUM): дугаарчлал 1-ээс
+дахин эхлэх үед шинэ хэсэг гэж үзэж, хэсэг бүрийг сүүлийн хаалтын ханшаар нь ойр тикерт оноож тавина.
 """
 from __future__ import annotations
 
-import logging
+import csv
 import re
-from datetime import date, timedelta
-from html.parser import HTMLParser
+from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
-from mse_financials.client import Client
-
-from .config import TICKERS
-from .prices import Bar, read_csv, write_csv
-
-log = logging.getLogger("mse_analysis.live")
-
-BASE = "https://open.mse.mn"
-#: Тикер -> open.mse.mn дахь үнэт цаасны дугаар
-SECURITY_IDS = {"APU": 90, "TUM": 549, "TCK": 22, "SUU": 135, "MFC": 551, "GAZR": 565, "MMX": 208, "MGLA": 572}
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+HEADER = re.compile(r"^[A-Za-z]{2,6}$")
+ROW = re.compile(r"^\d+\t")
 
 
-def url_for(ticker: str, today: Optional[date] = None, days: int = 60) -> str:
-    u = f"{BASE}/securities/{SECURITY_IDS[ticker]}/tab/tradeinfo"
-    if today:
-        u += f"?startDate={(today - timedelta(days=days)).isoformat()}&endDate={today.isoformat()}"
-    return u
+@dataclass(frozen=True)
+class Bar:
+    day: date
+    open: float
+    high: float
+    low: float
+    close: float
+    qty: float
+    value: float
 
 
-class _Rows(HTMLParser):
-    """HTML-ийн <tr> бүрийн <td>/<th> нүднүүдийн текстийг цуглуулна."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.rows: list[list[str]] = []
-        self._row: Optional[list[str]] = None
-        self._cell: Optional[list[str]] = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "tr":
-            self._row = []
-        elif tag in ("td", "th") and self._row is not None:
-            self._cell = []
-
-    def handle_data(self, data):
-        if self._cell is not None:
-            self._cell.append(data)
-
-    def handle_endtag(self, tag):
-        if tag in ("td", "th") and self._cell is not None and self._row is not None:
-            self._row.append(" ".join("".join(self._cell).split()))
-            self._cell = None
-        elif tag == "tr" and self._row is not None:
-            if self._row:
-                self.rows.append(self._row)
-            self._row = None
+def _num(s: str) -> float:
+    s = s.strip().replace(",", "")
+    return float(s) if s else 0.0
 
 
-def _num(s: str) -> Optional[float]:
-    s = s.replace(",", "").replace("\xa0", "").strip()
+def _bar(parts: list[str]) -> Optional[Bar]:
+    if len(parts) < 8:
+        return None
     try:
-        return float(s)
+        day = datetime.strptime(parts[7].strip(), "%Y-%m-%d").date()
+        hi, lo, op, cl = (_num(p) for p in parts[1:5])
+        return Bar(day, op, hi, lo, cl, _num(parts[5]), _num(parts[6]))
     except ValueError:
         return None
 
 
-def parse_history(html: str, today: date) -> list[Bar]:
-    """'Арилжааны мэдээлэл' дэд табын 2 баганатай хүснэгтээс тухайн өдрийн ханшийг задлана."""
-    p = _Rows()
-    p.feed(html)
-    
-    info: dict[str, float] = {}
-    for cells in p.rows:
-        if len(cells) >= 2:
-            k = cells[0].strip().lower()
-            v = _num(cells[1])
-            if v is not None:
-                info[k] = v
-
-    cl = None
-    op = None
-    for k, v in info.items():
-        if "хаалтын ханш" in k and "өмнөх" not in k:
-            cl = v
-        elif "нээлтийн ханш" in k:
-            op = v
-
-    if not cl or cl <= 0:
-        return []
-
-    if not op:
-        op = cl
-
-    bar = Bar(
-        day=today,
-        open=op,
-        high=max(op, cl),
-        low=min(op, cl),
-        close=cl,
-        qty=0.0,
-        value=0.0
-    )
-    return [bar]
+def _clean(bars: Iterable[Bar]) -> list[Bar]:
+    """Хуучнаас шинэ рүү эрэмбэлж, огноо давхардлыг (сүүлийнхийг нь) арилгана; хаалт 0 (арилжаа болоогүй) мөрийг хасна."""
+    by_day: dict[date, Bar] = {}
+    for b in bars:
+        if b.close > 0:
+            by_day[b.day] = b
+    return [by_day[d] for d in sorted(by_day)]
 
 
-def fetch(raw_dir: Optional[Path], today: date, client: Optional[Client] = None) -> dict[str, list[Bar]]:
-    """8 тикерийн хуудсыг татаж задлана. Тикер -> [Bar]."""
-    client = client or Client(base_url=BASE, timeout=40)
+def parse_trade_history(text: str, ref_prices: dict[str, float] | None = None) -> dict[str, list[Bar]]:
+    """Тикер -> [Bar] (хуучнаас шинэ рүү). `ref_prices`: нэг гарчгийн дор олон компани орсон үед хэсгийг
+    тикерт оноох лавлах ханш (жишээ нь inputs/market.csv-ийн ханш)."""
+    sections: list[tuple[str, list[Bar]]] = []         # (гарчиг, хэсгүүд)
+    header = None
+    cur: list[Bar] = []
+    last_no = None
+    groups: list[tuple[str, list[list[Bar]]]] = []
+    for line in text.replace("\r", "").split("\n"):
+        s = line.strip()
+        if HEADER.match(s):
+            header = s.upper()
+            groups.append((header, [[]]))
+            last_no = None
+            continue
+        if header is None or not ROW.match(line):
+            continue
+        parts = line.split("\t")
+        bar = _bar(parts)
+        if bar is None:
+            continue
+        no = int(parts[0])
+        if last_no is not None and no <= last_no and groups[-1][1][-1]:
+            groups[-1][1].append([])                    # дугаарчлал дахин эхэллээ -> шинэ компанийн хэсэг
+        groups[-1][1][-1].append(bar)
+        last_no = no
+    del sections, cur
+
     out: dict[str, list[Bar]] = {}
-    for t in TICKERS:
-        if t not in SECURITY_IDS:
+    refs = ref_prices or {}
+    for header, segs in groups:
+        segs = [s for s in segs if s]
+        if len(segs) == 1:
+            out[header] = _clean(segs[0])
             continue
-        try:
-            html = client.text(url_for(t, today))
-        except Exception as e:
-            log.warning("%s: татаж чадсангүй: %s", t, e)
-            continue
-        if raw_dir:
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            (raw_dir / f"{t}.html").write_text(html, "utf-8")
-        
-        bars = parse_history(html, today)
-        log.info("%s: сүүлийн хаалт %s", t, f"{bars[0].close:g} ({bars[0].day})" if bars else "—")
-        if bars:
-            out[t] = bars
-        client.sleep()
+        free = [t for t in refs if t not in out]
+        for seg in segs:
+            last = max(seg, key=lambda b: b.day).close            # хэсгийн хамгийн сүүлийн хаалт
+            cands = [header] + [t for t in free if t != header]
+            best = min(cands, key=lambda t: abs(last - refs[t]) / refs[t] if refs.get(t) else float("inf"))
+            if best == header and refs.get(header) is None and out.get(header):
+                best = next((t for t in free if t not in out), header)
+            out[best] = _clean(seg)
+            if best in free:
+                free.remove(best)
     return out
 
 
-# ------------------------------------------------------------------ inputs/-д бичих
-def apply(history: dict[str, list[Bar]], inputs: Path) -> list[str]:
-    """`prices/<T>.csv`-д шинэ өдрүүдийг нэгтгэж, `market.csv` дахь ханш/огноог сүүлийн хаалтаар шинэчилнэ."""
-    import csv
-
-    path = inputs / "market.csv"
-    with open(path, newline="", encoding="utf-8") as fh:
-        rd = csv.DictReader(fh)
-        fields = rd.fieldnames or []
-        rows = list(rd)
-    done = []
-    for r in rows:
-        t = r["ticker"].strip().upper()
-        new = history.get(t)
-        if not new:
-            continue
-        pp = inputs / "prices" / f"{t}.csv"
-        bars = {b.day: b for b in (read_csv(pp) if pp.exists() else [])}
-        added = sum(1 for b in new if b.day not in bars)
-        bars.update({b.day: b for b in new})
-        merged = [bars[d] for d in sorted(bars)]
-        write_csv(pp, merged)
-        last = merged[-1]
-        r["price"] = f"{last.close:g}"
-        r["price_date"] = last.day.isoformat()
-        done.append(f"{t} {last.close:g} ({last.day}), +{added} шинэ өдөр")
+def write_csv(path: Path, bars: list[Bar]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
-    return done
+        w = csv.writer(fh)
+        w.writerow(["date", "open", "high", "low", "close", "qty", "value"])
+        for b in bars:
+            w.writerow([b.day.isoformat(), b.open, b.high, b.low, b.close, b.qty, b.value])
+
+
+def read_csv(path: Path) -> list[Bar]:
+    bars = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            bars.append(Bar(date.fromisoformat(row["date"]), float(row["open"]), float(row["high"]),
+                            float(row["low"]), float(row["close"]), float(row.get("qty") or 0),
+                            float(row.get("value") or 0)))
+    return _clean(bars)
+
+
+def load_prices(directory: Path) -> dict[str, list[Bar]]:
+    """`inputs/prices/<TICKER>.csv` бүгдийг уншина."""
+    out: dict[str, list[Bar]] = {}
+    if directory.is_dir():
+        for p in sorted(directory.glob("*.csv")):
+            out[p.stem.upper()] = read_csv(p)
+    return out
