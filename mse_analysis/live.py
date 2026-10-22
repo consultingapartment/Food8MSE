@@ -1,12 +1,7 @@
-"""МХБ-ийн нээлттэй өгөгдлийн сайт (open.mse.mn)-аас хаалтын ханшийн түүхийг татна.
+"""МХБ-ийн нээлттэй өгөгдлийн сайт (open.mse.mn)-аас тухайн өдрийн арилжааны мэдээллийг татна.
 
-Хаяг: `https://open.mse.mn/securities/{id}/tab/tradeinfo` — хувьцаа бүрийн арилжааны түүхийн хүснэгт
-(Огноо, Нээлтийн ханш, Хаалтын ханш, Өдрийн хязгаар "доод - дээд", Хэлцлийн тоо ширхэг, Үнийн дүн, ...).
-Нэвтрэлт, cookie шаардахгүй. Шинэ өдрийг хуучин түүхтэй нэгтгэж (огноогоор давхардал арилгана) бичнэ.
-
-ЧУХАЛ: HTML-ийн бүтцийг GitHub Actions-ээс шууд шалгаагүй (энэ орчноос mse.mn хаагдсан). Задлагч нь хүснэгтийн
-мөр бүрийг огноогоор нь таньдаг тул тохиргоо өөрчлөгдсөн ч ажиллах магадлалтай; хариуг `inputs/_raw/`-д хадгална.
-Задлаж чадаагүй бол ямар ч файлыг өөрчлөхгүй, алдаагаар дуусна.
+Хаяг: `https://open.mse.mn/securities/{id}/tab/tradeinfo` — "Арилжааны мэдээлэл" дэд таб (Үндсэн харагдах байдал).
+Тухайн өдрийн нээлт, хаалтын ханшийг шууд авч одоо байгаа түүхтэй нэгтгэнэ.
 """
 from __future__ import annotations
 
@@ -31,7 +26,6 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 def url_for(ticker: str, today: Optional[date] = None, days: int = 60) -> str:
-    """`startDate`/`endDate` өгөхгүй бол сайт хуучин (кэшлэгдсэн) хугацаагаар хариулж болно (SUU 09-22 дээр зогссон байсан)."""
     u = f"{BASE}/securities/{SECURITY_IDS[ticker]}/tab/tradeinfo"
     if today:
         u += f"?startDate={(today - timedelta(days=days)).isoformat()}&endDate={today.isoformat()}"
@@ -75,31 +69,47 @@ def _num(s: str) -> Optional[float]:
         return None
 
 
-def parse_history(html: str) -> list[Bar]:
-    """Хүснэгтийн мөр бүрээс Bar. Багана: огноо, нээлт, хаалт, "доод - дээд", ширхэг, үнийн дүн, ...
-    Хаалт 0/хоосон (арилжаа болоогүй) мөрийг алгасна. Хуучнаас шинэ рүү эрэмбэлсэн жагсаалт буцаана."""
+def parse_history(html: str, today: date) -> list[Bar]:
+    """'Арилжааны мэдээлэл' дэд табын 2 баганатай хүснэгтээс тухайн өдрийн ханшийг задлана."""
     p = _Rows()
     p.feed(html)
-    bars: dict[date, Bar] = {}
+    
+    info: dict[str, float] = {}
     for cells in p.rows:
-        if len(cells) < 6 or not _DATE.match(cells[0]):
-            continue
-        try:
-            day = date.fromisoformat(cells[0][:10])
-        except ValueError:
-            continue
-        op, cl = _num(cells[1]), _num(cells[2])
-        rng = re.split(r"\s*[-–]\s*", cells[3].strip())
-        lo, hi = (_num(rng[0]), _num(rng[1])) if len(rng) == 2 else (None, None)
-        qty, val = _num(cells[4]), _num(cells[5])
-        if not cl or cl <= 0:
-            continue
-        bars[day] = Bar(day, op or cl, hi or cl, lo or cl, cl, qty or 0.0, val or 0.0)
-    return [bars[d] for d in sorted(bars)]
+        if len(cells) >= 2:
+            k = cells[0].strip().lower()
+            v = _num(cells[1])
+            if v is not None:
+                info[k] = v
+
+    cl = None
+    op = None
+    for k, v in info.items():
+        if "хаалтын ханш" in k and "өмнөх" not in k:
+            cl = v
+        elif "нээлтийн ханш" in k:
+            op = v
+
+    if not cl or cl <= 0:
+        return []
+
+    if not op:
+        op = cl
+
+    bar = Bar(
+        day=today,
+        open=op,
+        high=max(op, cl),
+        low=min(op, cl),
+        close=cl,
+        qty=0.0,
+        value=0.0
+    )
+    return [bar]
 
 
 def fetch(raw_dir: Optional[Path], today: date, client: Optional[Client] = None) -> dict[str, list[Bar]]:
-    """8 тикерийн хуудсыг татаж задлана. Тикер -> [Bar]. Татаж/задалж чадаагүйг орхино (анхааруулга)."""
+    """8 тикерийн хуудсыг татаж задлана. Тикер -> [Bar]."""
     client = client or Client(base_url=BASE, timeout=40)
     out: dict[str, list[Bar]] = {}
     for t in TICKERS:
@@ -113,8 +123,9 @@ def fetch(raw_dir: Optional[Path], today: date, client: Optional[Client] = None)
         if raw_dir:
             raw_dir.mkdir(parents=True, exist_ok=True)
             (raw_dir / f"{t}.html").write_text(html, "utf-8")
-        bars = [b for b in parse_history(html) if b.day <= today]
-        log.info("%s: %d мөр, сүүлийн хаалт %s", t, len(bars), f"{bars[-1].close:g} ({bars[-1].day})" if bars else "—")
+        
+        bars = parse_history(html, today)
+        log.info("%s: сүүлийн хаалт %s", t, f"{bars[0].close:g} ({bars[0].day})" if bars else "—")
         if bars:
             out[t] = bars
         client.sleep()
