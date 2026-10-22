@@ -130,3 +130,29 @@ def missing_detail(c: Company, p: Per) -> str:
     if c.reports and not any(r.period.year == p.year for r in c.reports):
         return f"{p.year} оны тайлан алга"
     return ", ".join(f"{p.year} оны {m} сарын тайлан алга" for m in miss)
+
+
+def _span(c: Company, year: int, a: int, b: int, key: str) -> Optional[float]:
+    x, y = _ytd(c, year, b, key), _ytd(c, year, a, key)
+    return None if x is None or y is None else x - y
+
+
+def latest_view(c: Company, key: str) -> dict:
+    """Компанийн САЛТ тайлангаас гарах бүх харьцуулалт (мянган ₮): хуримтлал (YTD), сүүлийн улирал, сүүлийн хагас жил;
+    тус бүрийг өмнөх үетэй болон өмнөх оны мөн үетэй. Тооцох тайлан дутуу бол None (зохиож бөглөхгүй)."""
+    r = c.latest
+    if r is None or not r.period.year:
+        return {}
+    y, m = r.period.year, r.months
+    out: dict = {"label": f"{y} Q{m // 3}", "year": y, "months": m,
+                 "ytd": _ytd(c, y, m, key), "ytd_py": _ytd(c, y - 1, m, key)}
+    q = _span(c, y, m - 3, m, key)
+    pq = _span(c, y, m - 6, m - 3, key) if m > 3 else _span(c, y - 1, 9, 12, key)
+    out["q"], out["q_prev"], out["q_py"] = q, pq, _span(c, y - 1, m - 3, m, key)
+    out["q_label"] = f"Q{m // 3}"
+    if m in (6, 12):
+        h = _span(c, y, m - 6, m, key)
+        ph = _span(c, y - 1, 6, 12, key) if m == 6 else _span(c, y, 0, 6, key)
+        out["h"], out["h_prev"], out["h_py"] = h, ph, _span(c, y - 1, m - 6, m, key)
+        out["h_label"] = f"H{m // 6}"
+    return out

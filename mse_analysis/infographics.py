@@ -41,6 +41,8 @@ def _save(fig, out: Path, title: str, sub: str) -> Path:
     h = fig.get_size_inches()[1]
     fig.text(0.012, 1 - 0.14 / h, title, fontsize=15, fontweight="bold", color=INK, ha="left", va="top")
     fig.text(0.012, 1 - 0.55 / h, sub, fontsize=9, color=MUTED, ha="left", va="top")
+    from . import brand
+    brand.stamp(fig)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130, facecolor="white")
     _plt().close(fig)
@@ -448,6 +450,195 @@ def ownership_waffle(res: Result, out: Path) -> Path:
     return _save(fig, out, "Хэн хэн эзэмшдэг вэ? — 100 хувьцаа = 100 цэг", f"эзэмшлийн мэдээлэл {as_of or '—'} · " + _sub(res))
 
 
+# ------------------------------------------------------------------ 8. Ашгийн гүүр
+BRIDGE_SHORT = ["Нийт\nашиг", "Борл.,\nмаркет.", "Удирд.", "Санхүү", "Бусад\n(цэвэр)", "Татвар", "Бусад"]
+
+
+def profit_bridge_fig(res: Result, out: Path) -> Optional[Path]:
+    from .insights import BRIDGE_ITEMS
+    plt = _plt()
+    items = [(t, res.insights["bridge"].get(t)) for t in res.tickers]
+    if not any(b for _, b in items):
+        return None
+    fig, axes = plt.subplots(2, 4, figsize=(16, 9))
+    for ax, (t, b) in zip(axes.flat, items):
+        ax.set_title(t, loc="left", fontsize=11, fontweight="bold", color=INK, pad=6)
+        if not b:
+            ax.text(0.5, 0.5, "өмнөх оны мөн үеийн\nтайлан алга", ha="center", va="center", color=MUTED, transform=ax.transAxes, fontsize=9)
+            ax.axis("off")
+            continue
+        vals = [b["steps"][k] / 1e6 for k in BRIDGE_ITEMS]
+        start, end = b["start"] / 1e6, b["end"] / 1e6
+        run = start
+        ax.bar(0, start, color=MID, width=0.62, zorder=2)
+        ax.text(0, start, f"{start:,.1f}", ha="center", va="bottom" if start >= 0 else "top", fontsize=7.5, color=INK)
+        for i, v in enumerate(vals, 1):
+            ax.bar(i, v, bottom=run, color=GOOD if v >= 0 else BAD, width=0.62, zorder=2)
+            if abs(v) >= 0.005 * max(abs(start), abs(end), 1):
+                ax.text(i, run + v, f"{v:+,.1f}", ha="center", va="bottom" if v >= 0 else "top", fontsize=7, color=INK)
+            run += v
+        levels = [0.0, start, end]
+        acc = start
+        for v in vals:
+            acc += v
+            levels.append(acc)
+        lo, hi = min(levels), max(levels)
+        pad = (hi - lo) * 0.14 or 1.0
+        ax.set_ylim(lo - pad, hi + pad)
+        ax.bar(len(vals) + 1, end, color=INK, width=0.62, zorder=2)
+        ax.text(len(vals) + 1, end, f"{end:,.1f}", ha="center", va="bottom" if end >= 0 else "top", fontsize=7.5, color=INK)
+        ax.set_xticks(range(len(vals) + 2))
+        ax.set_xticklabels([b["base_label"]] + BRIDGE_SHORT + [b["label"]], fontsize=6.3, color=MUTED)
+        ax.axhline(0, color=MUTED, lw=0.8)
+        ax.grid(axis="y", color=GRID, lw=0.7, zorder=0)
+        ax.set_axisbelow(True)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7, colors=MUTED, length=0)
+    fig.tight_layout(rect=(0, 0, 1, _top(fig)), h_pad=2.4, w_pad=1.6)
+    return _save(fig, out, "Ашиг яагаад өөрчлөгдсөн бэ? — ашгийн гүүр",
+                 "Сүүлийн тайлангийн хуримтлагдсан цэвэр ашиг өмнөх оны мөн үеэс (тэрбум ₮) · ногоон = ашгийг нэмсэн, улаан = бууруулсан · " + _sub(res))
+
+
+# ------------------------------------------------------------------ 9. Корреляци ба салбарын индекс
+def correlation_fig(res: Result, out: Path) -> Optional[Path]:
+    pc = res.insights.get("pricecorr") or {}
+    ts = pc.get("tickers") or []
+    if len(ts) < 3:
+        return None
+    import numpy as np
+    plt = _plt()
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(15, 7.2), gridspec_kw={"width_ratios": [1.15, 1]})
+    m = np.array([[np.nan if pc["corr"].get((a, b)) is None else pc["corr"][(a, b)] for b in ts] for a in ts])
+    im = a1.imshow(m, cmap="RdYlGn_r", vmin=-0.6, vmax=0.6)
+    a1.set_xticks(range(len(ts)))
+    a1.set_xticklabels(ts, fontsize=9, color=INK)
+    a1.set_yticks(range(len(ts)))
+    a1.set_yticklabels(ts, fontsize=9, color=INK)
+    for i in range(len(ts)):
+        for j in range(len(ts)):
+            if not np.isnan(m[i, j]):
+                a1.text(j, i, f"{m[i, j]:.2f}", ha="center", va="center", fontsize=8.5, color=INK if abs(m[i, j]) < 0.45 else "white")
+    a1.set_title("Хоорондын корреляци (долоо хоногийн өгөөж, сүүлийн 52 долоо хоног)", loc="left", fontsize=10.5, fontweight="bold", color=INK, pad=10)
+    for sp in a1.spines.values():
+        sp.set_visible(False)
+    a1.tick_params(length=0)
+    fig.colorbar(im, ax=a1, fraction=0.046, pad=0.02).ax.tick_params(labelsize=8)
+    rel = [(t, pc["rel"][t]) for t in ts if pc["rel"].get(t)]
+    rel.sort(key=lambda x: x[1]["excess"])
+    for y, (t, r) in enumerate(rel):
+        a2.barh(y, r["excess"], color=GOOD if r["excess"] >= 0 else BAD, height=0.6, zorder=2)
+        a2.text(max(r["excess"], 0) + 0.01, y,
+                f"{r['excess'] * 100:+.0f}pp   (өөрөө {r['return'] * 100:+.0f}%, бусад {r['index'] * 100:+.0f}% · β {r['beta']:.2f})",
+                va="center", ha="left", fontsize=8, color=INK)
+    a2.set_yticks(range(len(rel)))
+    a2.set_yticklabels([t for t, _ in rel], fontsize=9.5, color=INK, fontweight="bold")
+    a2.axvline(0, color=MUTED, lw=0.9)
+    lim = max([abs(r["excess"]) for _, r in rel] + [0.3])
+    a2.set_xlim(-lim * 1.3, lim * 3.4)
+    a2.xaxis.set_major_formatter(lambda x, _: f"{x * 100:.0f}%")
+    a2.grid(axis="x", color=GRID, lw=0.7, zorder=0)
+    a2.set_axisbelow(True)
+    for sp in ("top", "right", "left"):
+        a2.spines[sp].set_visible(False)
+    a2.tick_params(axis="x", labelsize=8, colors=MUTED, length=0)
+    a2.tick_params(axis="y", length=0)
+    a2.set_title("Бусад 7-гийн дунджаас илүү/дутуу (52 долоо хоногийн өгөөж)", loc="left", fontsize=10.5, fontweight="bold", color=INK, pad=10)
+    fig.tight_layout(rect=(0, 0.02, 1, _top(fig)), w_pad=3)
+    fig.text(0.5, 0.008, "Корреляци бага (ногоон) = хамт хөдөлдөггүй, багцыг төрөлжүүлнэ. Улаан = ижил чиглэлд хөдөлдөг. β = бусад 7-гийн дундажийн хөдөлгөөнд өөрийн хөдөлгөөний мэдрэмж.",
+             ha="center", fontsize=8, color=MUTED)
+    return _save(fig, out, "Аль хувьцаанууд хамт хөдөлдөг вэ? — корреляци ба салбарын индекс", _sub(res))
+
+
+# ------------------------------------------------------------------ 10. Онцгой үзүүлэлтүүд
+def insights_fig(res: Result, out: Path) -> Optional[Path]:
+    I = res.insights
+    if not I:
+        return None
+    plt = _plt()
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9.6))
+
+    def panel(ax, title, rows, fmt, ref=None, note="", good_high=True, cap=None):
+        ax.set_title(title, loc="left", fontsize=10.5, fontweight="bold", color=INK, pad=8)
+        rows = [(t, v) for t, v in rows if v is not None]
+        rows.sort(key=lambda x: x[1])
+        if not rows:
+            ax.axis("off")
+            return
+        for y, (t, v) in enumerate(rows):
+            vv = v if cap is None else max(min(v, cap), -cap)
+            ok = (v >= (ref or 0)) == good_high
+            ax.barh(y, vv, color=GOOD if ok else BAD, height=0.62, zorder=2)
+            ax.text(max(vv, ref or 0) + 0.015 * max(abs(x[1]) for x in rows), y, fmt(v) + (" ▸" if cap and abs(v) > cap else ""),
+                    va="center", ha="left", fontsize=8, color=INK)
+        ax.set_yticks(range(len(rows)))
+        ax.set_yticklabels([t for t, _ in rows], fontsize=9, color=INK)
+        ax.axvline(ref or 0, color=MUTED, lw=0.9)
+        ax.grid(axis="x", color=GRID, lw=0.7, zorder=0)
+        ax.set_axisbelow(True)
+        lo, hi = ax.get_xlim()
+        ax.set_xlim(lo - (hi - lo) * 0.05, hi + (hi - lo) * 0.22)
+        for sp in ("top", "right", "left"):
+            ax.spines[sp].set_visible(False)
+        ax.tick_params(axis="x", labelsize=7.5, colors=MUTED, length=0)
+        ax.tick_params(axis="y", length=0)
+        if note:
+            ax.text(0, -0.2, note, transform=ax.transAxes, fontsize=7.6, color=MUTED, va="top")
+
+    panel(axes[0, 0], "Ашгийн цэвэр байдал\n(нэг удаагийн/бусад зүйлийн хувь)", [(t, (I["purity"].get(t) or {}).get("share")) for t in res.tickers],
+          lambda v: f"{v * 100:.0f}%", ref=0, good_high=False, cap=1.0,
+          note="Татвар төлөхийн өмнөх ашгийн хэдэн хувь нь бусад орлого, ханшийн зөрүү,\nданснаас хассан олзоос ирсэн. Өндөр = ашиг үндсэн үйл ажиллагаанаас биш.")
+    panel(axes[0, 1], "Өрийн үр өгөөж\n(ROA − зээлийн хүү, нэгж хувь)", [(t, (I["debt"].get(t) or {}).get("spread")) for t in res.tickers],
+          lambda v: f"{v * 100:+.1f}pp", note="Эерэг = зээлсэн мөнгөөр хүүгээс илүү олж байна.\nЗээлгүй компани харагдахгүй.")
+    panel(axes[0, 2], "Тобин Q\n((зах зээлийн үнэлгээ + өр) ÷ нийт хөрөнгө)", [(t, I["tobin"].get(t)) for t in res.tickers],
+          lambda v: f"{v:.2f}", ref=1.0, note="1-ээс бага (ногоон) = зах зээл компанийг нийт\nхөрөнгөөс нь хямд үнэлж байна.", good_high=False)
+    panel(axes[1, 0], "Бүтээн байгуулалтын индекс\n(дуусаагүй барилга ÷ үндсэн хөрөнгө)", [(t, (I["build"].get(t) or {}).get("ratio")) for t in res.tickers],
+          lambda v: f"{v * 100:.1f}%", good_high=True, note="Өндөр = одоо өргөжин тэлж байна\n(ирээдүйн хүчин чадал, мөн санхүүгийн ачаалал).")
+    # ашиг ба ханшийн зөрүү: хос багана
+    ax = axes[1, 1]
+    ax.set_title("Ханш ба ашгийн зөрүү\n(ханш 90 хоног, ашиг LTM YoY)", loc="left", fontsize=10.5, fontweight="bold", color=INK, pad=8)
+    rows = [(t, I["diverge"].get(t)) for t in res.tickers if I["diverge"].get(t)]
+    rows.sort(key=lambda x: (x[1]["gap"] if x[1]["gap"] is not None else -9))
+    for y, (t, d) in enumerate(rows):
+        pv = max(min(d["price"], 1.5), -1.5)
+        ax.barh(y + 0.17, pv, height=0.32, color=MID, zorder=2)
+        ax.text(max(pv, 0) + 0.04, y + 0.17, f"ханш {d['price'] * 100:+.0f}%", va="center", ha="left", fontsize=7.4, color=INK)
+        if d["earn"] is not None:
+            ev = max(min(d["earn"], 1.5), -1.5)
+            ax.barh(y - 0.17, ev, height=0.32, color=ORANGE, zorder=2)
+            ax.text(max(ev, 0) + 0.04, y - 0.17, f"ашиг {d['earn'] * 100:+.0f}%" + (" ▸" if abs(d["earn"]) > 1.5 else ""), va="center",
+                    ha="left", fontsize=7.4, color=INK)
+        else:
+            ax.text(0, y - 0.17, " ашиг: суурь ≤ 0", va="center", fontsize=7.4, color=MUTED, style="italic")
+        if d["verdict"] and d["verdict"] != "нийцэж байна":
+            ax.text(1.0, y, d["verdict"], transform=ax.get_yaxis_transform(), va="center", ha="right", fontsize=7.6,
+                    color=BAD if d["verdict"] == "ханш түрүүлсэн" else GOOD, fontweight="bold")
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([t for t, _ in rows], fontsize=9, color=INK)
+    ax.axvline(0, color=MUTED, lw=0.9)
+    ax.set_xlim(-1.7, 3.0)
+    ax.xaxis.set_major_formatter(lambda x, _: f"{x * 100:.0f}%")
+    ax.grid(axis="x", color=GRID, lw=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
+    ax.tick_params(axis="x", labelsize=7.5, colors=MUTED, length=0)
+    ax.tick_params(axis="y", length=0)
+    ax.text(0, -0.2, "Ханш ашгаас 25pp-аас илүү түрүүлсэн = «ханш түрүүлсэн»\n(халсан байж магадгүй); хоцорсон = ашиг ханшид шингээгүй.",
+            transform=ax.transAxes, fontsize=7.6, color=MUTED, va="top")
+    # зургаа дахь самбар: уншиж ойлгох заавар
+    ax = axes[1, 2]
+    ax.axis("off")
+    ax.text(0, 1, "Яаж унших вэ", fontsize=10.5, fontweight="bold", color=INK, va="top")
+    ax.text(0, 0.9, "• Ашгийн цэвэр байдал өндөр + Тобин Q бага\n   → ашиг «нэг удаагийнх» байж болзошгүй, анхаар.\n\n"
+                    "• Өрийн үр өгөөж сөрөг + бүтээн байгуулалт өндөр\n   → өргөжилт өрөөр санхүүждэг, ашиг нь хараахан гараагүй.\n\n"
+                    "• Ханш түрүүлсэн + ашгийн цэвэр байдал муу\n   → ханш ашгаас илүү «мэдээлэл»-ээр хөдөлсөн.\n\n"
+                    "• Ханш хоцорсон + өрийн үр өгөөж эерэг\n   → ашиг өсөж байгаа ч ханш хараахан тусгаагүй.",
+            fontsize=9, color=INK, va="top", linespacing=1.5)
+    fig.tight_layout(rect=(0, 0.02, 1, _top(fig)), h_pad=5.5, w_pad=3.2)
+    return _save(fig, out, "Онцгой үзүүлэлтүүд — ашгийн чанар, өр, үнэлгээ, өргөжилт, ханшийн зөрүү", _sub(res))
+
+
 # ------------------------------------------------------------------ бүгдийг үүсгэх
 def build(res: Result, out_dir: Path) -> list[Path]:
     d = Path(out_dir)
@@ -459,5 +650,10 @@ def build(res: Result, out_dir: Path) -> list[Path]:
         health_check(res, d / "health_check.png"),
         seasonality(res, d / "seasonality.png"),
         ownership_waffle(res, d / "ownership.png"),
+        profit_bridge_fig(res, d / "profit_bridge.png"),
+        correlation_fig(res, d / "correlation.png"),
+        insights_fig(res, d / "insights.png"),
     ]
+    from . import infographics2
+    made += infographics2.build(res, d)
     return [p for p in made if p]

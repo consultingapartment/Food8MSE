@@ -112,6 +112,9 @@ def build(res: Result, out: Path, images: list[Path] | None = None) -> Path:
     _ratio_history(wb, res)
     _dupont(wb, res)
     _trends(wb, res)
+    _latest(wb, res)
+    _insights(wb, res)
+    _insights2(wb, res)
     _breakdown(wb, res)
     _risk(wb, res)
     _valuation(wb, res)
@@ -326,6 +329,249 @@ def _trends(wb, res: Result):
     rows = [[t, res.r[t]["margin_vol"]] for t in res.tickers]
     s.table(["Компани", "σ (нэгж хувь)"], rows, [None, "pct"])
     s.note("Тэгш, бага σ = тогтвортой ашигт ажиллагаа; өндөр σ = мөчлөгт, урьдчилан таамаглахад хэцүү.")
+    s.ws.freeze_panes = "B3"
+
+
+def _latest(wb, res: Result):
+    """Сүүлийн тайлангаас: хуримтлал (YTD), сүүлийн улирал, сүүлийн хагас жил — өмнөх үе ба өмнөх оны мөн үетэй, бүх компани зэрэгцээ."""
+    from . import periods as P
+    s = Sheet(wb, "Сүүлийн үеийн харьцуулалт", [22, 10, 11, 11, 9, 8, 11, 11, 9, 11, 9, 8, 11, 11, 9, 11, 9], "2F5597")
+    s.title("СҮҮЛИЙН ТАЙЛАНГИЙН ҮЕ — ХУРИМТЛАЛ, УЛИРАЛ, ХАГАС ЖИЛ (бүх компани зэрэгцээ)",
+            "Тэрбум ₮. Хуримтлал = оны эхнээс сүүлийн тайлан хүртэл. Улирал/хагас жил = хуримтлагдсан тайлангийн зөрүү. "
+            "Хоосон нүд = тооцоход хэрэгтэй тайлан (Q1, Q3 заавал биш) ирүүлээгүй; зохиож бөглөөгүй. Δ = өөрчлөлт, суурь ≤ 0 бол хоосон.")
+    heads = ["Компани", "Сүүлийн тайлан", "Хуримтлал", "Өмнөх оны мөн үе", "Δ", "Улирал",
+             "Улирал", "Өмнөх улирал", "Δ", "Өмнөх оны мөн улирал", "Δ", "Хагас жил",
+             "Хагас жил", "Өмнөх хагас жил", "Δ", "Өмнөх оны мөн хагас жил", "Δ"]
+    fm = [None, None, "bn", "bn", "pct", None, "bn", "bn", "pct", "bn", "pct", None, "bn", "bn", "pct", "bn", "pct"]
+    bn = lambda v: None if v is None else v / 1e6          # noqa: E731
+    for key, title in (("revenue", "Борлуулалтын орлого"), ("net_income", "Цэвэр ашиг")):
+        s.h2(title)
+        rows = []
+        for t in res.tickers:
+            v = P.latest_view(res.companies[t], key)
+            if not v:
+                rows.append([t] + [None] * 16)
+                continue
+            d = lambda a, b: P.change(v.get(a), v.get(b))[0]   # noqa: E731
+            rows.append([t, v["label"], bn(v["ytd"]), bn(v["ytd_py"]), d("ytd", "ytd_py"),
+                         v["q_label"], bn(v["q"]), bn(v["q_prev"]), d("q", "q_prev"), bn(v["q_py"]), d("q", "q_py"),
+                         v.get("h_label"), bn(v.get("h")), bn(v.get("h_prev")), d("h", "h_prev"), bn(v.get("h_py")), d("h", "h_py")])
+        s.table(heads, rows, fm)
+    s.ws.freeze_panes = "B3"
+
+
+def _insights(wb, res: Result):
+    """Онцгой үзүүлэлтүүд: ашгийн гүүр, ашгийн цэвэр байдал, өрийн үр өгөөж, Тобин Q, бүтээн байгуулалт, ханш/ашгийн зөрүү, корреляци."""
+    from openpyxl.formatting.rule import ColorScaleRule
+    from .insights import BRIDGE_ITEMS
+    I = res.insights
+    if not I:
+        return
+    s = Sheet(wb, "Онцгой үзүүлэлт", [22, 13, 12, 12, 12, 12, 12, 12, 12, 12, 30], "7030A0")
+    s.title("ОНЦГОЙ ҮЗҮҮЛЭЛТҮҮД", "Тэрбум ₮ (өөрөөр заагаагүй бол). Бүгд тайлан, ханшийн түүхөөс тооцогдсон; хөрөнгө оруулалтын зөвлөгөө биш.")
+    bn = lambda v: None if v is None else v / 1e6          # noqa: E731
+
+    s.h2("1. АШГИЙН ГҮҮР — сүүлийн тайлангийн хуримтлагдсан цэвэр ашиг өмнөх оны мөн үеэс яагаад өөрчлөгдсөн")
+    rows = []
+    for t in res.tickers:
+        b = I["bridge"].get(t)
+        rows.append([t, None, None] + [None] * 8 if not b else
+                    [t, f"{b['label']} ↔ {b['base_label']}", bn(b["start"])] + [bn(b["steps"][k]) for k in BRIDGE_ITEMS] + [bn(b["end"])])
+    s.table(["Компани", "Үе", "Өмнөх ашиг"] + list(BRIDGE_ITEMS) + ["Одоогийн ашиг"], rows, [None, None] + ["bn"] * 9)
+    s.note("Эерэг = ашгийг нэмсэн, сөрөг = бууруулсан. «Бусад (цэвэр)» = бусад орлого/зардал, ханшийн зөрүү, хөрөнгө данснаас хассаны олз. Нийлбэр: өмнөх ашиг + нөлөөнүүд = одоогийн ашиг.", 11)
+
+    s.h2("2. АШГИЙН ЦЭВЭР БАЙДАЛ — ашиг үндсэн үйл ажиллагаанаас уу, нэг удаагийн зүйлээс үү")
+    rows = []
+    for t in res.tickers:
+        p = I["purity"].get(t)
+        verdict = None
+        if p:
+            sh = p["share"]
+            verdict = ("ашиг үндсэн бус зүйлээс давамгайлж байна" if sh is not None and sh > 0.5 else
+                       "ашгийн зарим хэсэг нэг удаагийн" if sh is not None and sh > 0.2 else "ашиг үндсэн үйл ажиллагаанаас")
+        rows.append([t, p and p["label"], p and bn(p["pbt"]), p and bn(p["non_core"]), p and bn(p["core"]), p and p["share"], verdict])
+    s.table(["Компани", "Үе", "Татвар төлөхийн өмнөх ашиг", "Нэг удаагийн/бусад", "Үндсэн ашиг", "Нэг удаагийн хувь", "Дүгнэлт"],
+            rows, [None, None, "bn", "bn", "bn", "pct"])
+
+    s.h2("3. ӨРИЙН ҮР ӨГӨӨЖ — хөрөнгийн өгөөж (ROA) ба зээлийн хүүний бодит түвшин (LTM)")
+    rows = []
+    for t in res.tickers:
+        d = I["debt"].get(t)
+        v = None if not d else ("зээлгүй" if d["debt_free"] else "өр ашиг нэмж байна" if d["spread"] > 0 else "өр ашгийг идэж байна")
+        rows.append([t, d and d["roa"], d and d["rate"], d and d["spread"], d and bn(d["debt"]), v])
+    s.table(["Компани", "ROA ( татвар, хүүгийн өмнөх)", "Зээлийн хүүний бодит түвшин", "Зөрүү", "Дундаж зээл (тэрбум ₮)", "Дүгнэлт"],
+            rows, [None, "pct", "pct", "pct", "bn"])
+    s.note("Зээлийн хүүний бодит түвшин = санхүүгийн зардал ÷ дундаж (богино + урт хугацаат) зээл. Санхүүгийн зардалд зээлийн бус хүү орсон байж болох тул ойролцоо.", 11)
+
+    s.h2("4. ТОБИН Q — (зах зээлийн үнэлгээ + нийт өр) ÷ нийт хөрөнгө")
+    rows = [[t, I["tobin"].get(t), None if I["tobin"].get(t) is None else
+             ("зах зээл хөрөнгөөс нь хямд үнэлж байна" if I["tobin"][t] < 1 else "хөрөнгөөс нь үнэтэй үнэлж байна")] for t in res.tickers]
+    s.table(["Компани", "Тобин Q", "Дүгнэлт"], rows, [None, "x"])
+
+    s.h2("5. БҮТЭЭН БАЙГУУЛАЛТЫН ИНДЕКС — дуусаагүй барилга ÷ үндсэн хөрөнгө")
+    rows = []
+    for t in res.tickers:
+        b = I["build"].get(t)
+        rows.append([t, b and b["label"], b and bn(b["cip"]), b and bn(b["ppe"]), b and b["ratio"], b and b["ratio_prev"], b and bn(b["cip_change"])])
+    s.table(["Компани", "Үе", "Дуусаагүй барилга", "Үндсэн хөрөнгө", "Индекс", "Өмнөх оны эцэс", "Дуусаагүй барилгын өөрчлөлт"],
+            rows, [None, None, "bn", "bn", "pct", "pct", "bn"])
+
+    s.h2("6. АШИГ БА ХАНШИЙН ЗӨРҮҮ — ханш (сүүлийн 90 хоног) ба цэвэр ашиг (LTM YoY)")
+    rows = []
+    for t in res.tickers:
+        d = I["diverge"].get(t)
+        rows.append([t, d and d["price"], d and d["earn"], d and d["gap"], d and d["verdict"]])
+    s.table(["Компани", "Ханшийн өөрчлөлт", "Ашгийн өөрчлөлт", "Зөрүү (ханш − ашиг)", "Дүгнэлт"], rows, [None, "pct", "pct", "pct"])
+    s.note("Зөрүү +25pp-аас дээш = «ханш түрүүлсэн»; −25pp-аас доош = «ханш хоцорсон». Ашгийн суурь ≤ 0 бол хоосон.", 11)
+
+    pc = I.get("pricecorr") or {}
+    ts = pc.get("tickers") or []
+    if ts:
+        s.h2("7. ХАНШИЙН КОРРЕЛЯЦИ — долоо хоногийн өгөөж, сүүлийн 52 долоо хоног")
+        rows = [[a] + [pc["corr"].get((a, b)) for b in ts] for a in ts]
+        h, e = s.table([""] + ts, rows, [None] + ["n2"] * len(ts))
+        s.ws.conditional_formatting.add(f"B{h + 1}:{get_column_letter(1 + len(ts))}{e}",
+                                        ColorScaleRule(start_type="num", start_value=-0.6, start_color="63BE7B",
+                                                       mid_type="num", mid_value=0, mid_color="FFFFFF", end_type="num", end_value=0.6, end_color="F8696B"))
+        s.note("Бага/сөрөг (ногоон) = хамт хөдөлдөггүй, багц төрөлжүүлэхэд тустай. Өндөр (улаан) = ижил чиглэлд хөдөлдөг.", 11)
+        s.h2("8. САЛБАРЫН ИНДЕКСТЭЙ ХАРЬЦУУЛАЛТ — бусад 7-гийн тэнцүү жинтэй дундаж (52 долоо хоног)")
+        rows = []
+        for t in ts:
+            r = pc["rel"].get(t)
+            rows.append([t, r and r["return"], r and r["index"], r and r["excess"], r and r["beta"], r and r["weeks"]])
+        s.table(["Компани", "Өөрийн өгөөж", "Бусад 7-гийн дундаж", "Илүү/дутуу", "β", "Долоо хоногийн тоо"], rows, [None, "pct", "pct", "pct", "n2"])
+    s.ws.freeze_panes = "B3"
+
+
+def _insights2(wb, res: Result):
+    """Нэмэлт 17 онцгой үзүүлэлт (insights2.py)."""
+    from .insights2 import HAIRCUTS, HAIRCUT_NAMES
+    I = res.insights2
+    if not I:
+        return
+    T = res.tickers
+    s = Sheet(wb, "Онцгой үзүүлэлт 2", [22, 14, 14, 14, 14, 14, 14, 14, 14, 30], "7030A0")
+    s.title("ОНЦГОЙ ҮЗҮҮЛЭЛТ (2) — 17 нэмэлт үзүүлэлт",
+            f"Тэрбум ₮ (өөрөөр заагаагүй бол). Хадгаламжийн хүү {res.assumptions.deposit_rate * 100:.0f}%, шаардах өгөөж "
+            f"{res.assumptions.required_return * 100:.0f}% (inputs/assumptions.json). Хөрөнгө оруулалтын зөвлөгөө биш.")
+    bn = lambda v: None if v is None else v / 1e6          # noqa: E731
+    row = lambda k, t, f: (lambda d: [t] + (f(d) if d else [None]))(I[k].get(t))   # noqa: E731
+
+    def sec(n, title, heads, key, f, fm, note=None):
+        s.h2(f"{n}. {title}")
+        s.table(heads, [row(key, t, f) for t in T], fm)
+        if note:
+            s.note(note, 10)
+
+    sec(1, "ТАЙЛАНГИЙН НАЙДВАРТАЙ БАЙДАЛ — Beneish M (хялбаршуулсан, мөнгөн урсгалгүй)",
+        ["Компани", "Үе", "M", "Дүгнэлт", "Хуримтлал/хөрөнгө", "DSRI", "GMI", "AQI", "SGI", "Босго давсан"], "beneish",
+        lambda d: [f"{d['label']} ↔ {d['base_label']}", d["m"], d["verdict"], d["tata"], d["comp"]["DSRI"], d["comp"]["GMI"],
+                   d["comp"]["AQI"], d["comp"]["SGI"], ", ".join(d["flags"]) or "—"], [None, None, "n2", None, "pct", "n2", "n2", "n2", "n2"],
+        "M > −1.78 = ашгийг «гоёсон» байж болзошгүй (АНУ-ын загвар, Монголд зөвхөн харьцуулах зорилготой). Мөнгөн урсгалын тайлан байхгүй тул хуримтлалыг балансаар тооцсон.")
+
+    s.h2("2. ХУВЬЦААНД НОГДОХ ТАТАН БУУЛГАХ ӨРТӨГ — хөрөнгийн бүлэг бүрийг хасалттайгаар зарж өрөө төлсний дараа")
+    rows = []
+    for t in T:
+        d = I["liq"].get(t)
+        rows.append([t] + ([d["label"], bn(d["recoverable"]), bn(d["liabilities"]), bn(d["net"]), d["per_share"], d["price"], d["ratio"],
+                            bn(d["book"])] if d else [None] * 8))
+    s.table(["Компани", "Үе", "Сэргээгдэх дүн", "Нийт өр", "Цэвэр дүн", "Ногдох ₮/ш", "Ханш ₮", "Ханш ÷ өртөг", "Дансны өмч"], rows,
+            [None, None, "bn", "bn", "bn", "n2", "n2", "x", "bn"])
+    s.note("Сэргээгдэх хувь: " + ", ".join(f"{HAIRCUT_NAMES[k]} {v * 100:.0f}%" for k, v in HAIRCUTS.items()) +
+           ". Цэвэр дүн сөрөг бол харьцаа хоосон (өр сэргээгдэх хөрөнгөөс их).", 10)
+
+    sec(3, "НОГДОЛ АШГИЙН НӨӨЦ — хуримтлагдсан ашиг ÷ жилийн ногдол ашиг",
+        ["Компани", "Үе", "Жилийн ногдол ашиг", "Хуримтлагдсан ашиг", "Нөөцийн жил", "Ногдол ашгийн хамрах", "Төлөлтийн хувь"], "divres",
+        lambda d: [d["label"], bn(d["dividend"]), bn(d["retained"]), d["years"], d["cover"], d["payout"]], [None, None, "bn", "bn", "n2", "x", "pct"])
+
+    s.h2("4. УЛИРЛЫН НӨЛӨӨТЭЙ ЖИЛИЙН АШГИЙН ТААМАГ — одоогийн хуримтлалыг түүхэн улирлын хуваарилалтаар жилчилсэн")
+    rows = []
+    for t in T:
+        d = I["season"].get(t)
+        rows.append([t] + ([d["label"], bn(d["ytd"]), "бодит" if d["done"] else "таамаг", bn(d["forecast"]), bn(d["low"]), bn(d["high"]),
+                            d["share"], bn(d["naive"]), bn(d["prev_fy"]), d.get("note")] if d else [None] * 10))
+    s.table(["Компани", "Үе", "Хуримтлал", "Төрөл", "Жилийн таамаг", "Доод", "Дээд", "Тухайн үеийн хувь", "Энгийн ×(12/сар)", "Өмнөх жил", "Тайлбар"], rows,
+            [None, None, "bn", None, "bn", "bn", "bn", "pct", "bn", "bn"])
+
+    sec(5, "ОРГИЛООС БУУРСАН ХЭМЖЭЭ — сүүлийн 12 сар",
+        ["Компани", "Оргил ₮", "Оргилын өдөр", "Сүүлийн ₮", "Буурсан %", "«Усан доор» хоног", "Хамгийн их уналт", "Сэргэхэд хэрэгтэй өсөлт", "Бүх түүхийн оргилоос"], "drawdown",
+        lambda d: [d["peak"], d["peak_day"], d["last"], d["dd"], d["under_days"], d["max_dd"], d["need"], d["dd_ath"]],
+        [None, "n2", "date", "n2", "pct", "int", "pct", "pct", "pct"])
+
+    sec(6, "ҮЙЛ АЖИЛЛАГААНЫ ХӨШҮҮРГИЙН ЗЭРЭГ — EBIT-ийн % өөрчлөлт ÷ борлуулалтын % өөрчлөлт",
+        ["Компани", "LTM", "EBIT өөрчлөлт", "Борлуулалтын өөрчлөлт", "Түүхэн дундаж (жилийн)"], "dol",
+        lambda d: [d["ltm"]["dol"] if d.get("ltm") else None, d["ltm"]["d_ebit"] if d.get("ltm") else None,
+                   d["ltm"]["d_rev"] if d.get("ltm") else None, d.get("hist")], [None, "n2", "pct", "pct", "n2"],
+        "Борлуулалт 1% өөрчлөгдөхөд ашиг хэдэн хувиар хөдөлдөг. Өндөр = тогтмол зардал их. Борлуулалтын өөрчлөлт нь 0-д ойр үед тогтворгүй.")
+
+    sec(7, "НЭГ ₮ ХУРИМТЛУУЛСАН АШГИЙН ҮР ДҮН — зах зээлийн үнэлгээний өсөлт ÷ хуримтлагдсан ашиг",
+        ["Компани", "Эхлэл", "Төгсгөл", "Жил", "Үнэлгээний өөрчлөлт", "Хуримтлагдсан ашгийн өөрчлөлт", "Үр дүн (₮)", "Эхний ханш", "Сүүлийн ханш"], "retention",
+        lambda d: [d["start"], d["end"], d["years"], bn(d["d_mv"]), bn(d["d_re"]), d["ratio"], d["p0"], d["p1"]], [None, None, None, "n2", "bn", "bn", "n2", "n2", "n2"],
+        "1-ээс бага = хуримтлуулсан ашиг зах зээлийн үнэлгээнд үнэ цэнэ нэмсэнгүй (ногдол ашиг, хувьцааны тооны өөрчлөлтийг тусад нь тооцоогүй).")
+
+    sec(8, "ЗАХ ЗЭЭЛИЙН СУУЛГАСАН ӨСӨЛТ БА БОДИТ ӨСӨЛТ",
+        ["Компани", "Суулгасан өсөлт", "Бодит (CAGR)", "Хугацаа (жил)", "Зөрүү (суулгасан − бодит)", "Шаардах өгөөж", "Тайлбар"], "implied",
+        lambda d: [d.get("implied"), d.get("actual"), d.get("span"), d.get("gap"), d.get("required"), d.get("note")], [None, "pct", "pct", "int", "pct", "pct"],
+        "Суулгасан өсөлт = шаардах өгөөж − ашгийн өгөөж (мөнхийн өсөлтийн загвараар). Бодит өсөлтөөс бага бол зах зээл өсөлтийг дутуу үнэлж байна.")
+
+    sec(9, "ӨӨРИЙН ХӨРӨНГӨӨР ХАНГАГДАХ ӨСӨЛТ — ROE × (1 − ногдол ашгийн төлөлт)",
+        ["Компани", "ROE", "Төлөлтийн хувь", "Хангагдах өсөлт", "Бодит борлуулалтын өсөлт", "Зөрүү (бодит − хангагдах)"], "sustain",
+        lambda d: [d["roe"], d["payout"], d["sustainable"], d["actual"], d["gap"]], [None, "pct", "pct", "pct", "pct", "pct"],
+        "Эерэг зөрүү = өсөлтийн зарим хэсгийг өр, гадны санхүүжилтээр хаасан.")
+
+    sec(10, "ЭРГЭЛТИЙН ХӨРӨНГИЙН АЧААЛАЛ — бараа материал + авлага − өглөг",
+        ["Компани", "Үе", "NWC", "Өмнөх оны мөн үе", "NWC / орлого", "Өмнөх", "NWC өсөлт", "Борлуулалтын өсөлт", "Нэмэлт ₮ тутамд NWC"], "wcap",
+        lambda d: [d["label"], bn(d["nwc"]), bn(d["nwc_prev"]), d["intensity"], d["intensity_prev"], d["nwc_growth"], d["rev_growth"], d["per_extra"]],
+        [None, None, "bn", "bn", "pct", "pct", "pct", "pct", "n2"])
+
+    s.h2("11. ТАЙЛАНГИЙН ДАРААХ ХАНШИЙН ХАРИУ — тайлан зарлагдсанаас ±14 хоногийн өгөөж, салбарын (бусад 7) дундажаас илүү/дутуу")
+    rows = []
+    for t in T:
+        d = I["reaction"].get(t)
+        if not d:
+            rows.append([t] + [None] * 6)
+            continue
+        rows.append([t, d["n"], d["hit"], d["avg_excess"], d["last"]["label"], d["last"]["surprise"], d["last"]["excess"]])
+    s.table(["Компани", "Тооцсон үйл явдал", "Чиглэл таарсан хувь", "Дундаж илүү өгөөж", "Сүүлийн тайлан", "Ашгийн YoY", "Салбараас илүү өгөөж"], rows,
+            [None, "int", "pct", "pct", None, "pct", "pct"])
+    s.note("Тайлан зарлагдсан огноо тодорхойгүй бол үеийн дараах хуулийн хугацаагаар тооцоолсон. Жижиг түүвэр тул чиг хандлага гэж үз.", 10)
+
+    s.h2("12. ЗАРДЛЫН «НААЛДАМХАЙ» БАЙДАЛ — борлуулалт өсөхөд ба буурахад зардлын хариу")
+    rows = []
+    for t in T:
+        d = I["sticky"].get(t)
+        rows.append([t] + ([{"year": "жил", "half": "хагас жил", "quarter": "улирал"}[d["kind"]], d["n_up"], d["n_dn"], d["beta_up"], d["beta_down"], d["sticky"]]
+                           if d else [None] * 6))
+    s.table(["Компани", "Давтамж", "Өссөн үе", "Буурсан үе", "Өсөхөд β", "Буурахад β", "Наалдамхай (өсөх − буурах)"], rows, [None, None, "int", "int", "n2", "n2", "n2"])
+    s.note("β = зардлын % өөрчлөлт ÷ борлуулалтын % өөрчлөлт. Эерэг = борлуулалт буурахад зардал дагаж буурдаггүй.", 10)
+
+    sec(13, "ТАТВАРЫН БОДИТ БА ХУУЛИЙН ХУВИЙН ЗӨРҮҮ (LTM)",
+        ["Компани", "Татвар төлөхийн өмнөх ашиг", "Татвар", "Бодит хувь", "Хуулийн хувь", "Зөрүү", "Зөрүүгийн дүн"], "taxgap",
+        lambda d: [bn(d["pbt"]), bn(d["tax"]), d["effective"], d["statutory"], d["gap"], bn(d["diff"])], [None, "bn", "bn", "pct", "pct", "pct", "bn"],
+        "Хуулийн хувь = ААНОАТ 10% (6 тэрбум ₮ хүртэл), 25% (давсан хэсэг). Сөрөг зөрүү = хуулиас бага татвар төлсөн.")
+
+    s.h2("14. БОГИНО ХУГАЦААТ ӨРИЙН ХАНА")
+    rows = []
+    for t in T:
+        d = I["wall"].get(t)
+        rows.append([t] + ([None, None, None, None, None, "зээлгүй"] if d and d.get("debt_free") else
+                           [bn(d["st"]), bn(d["lt"]), d["share"], d["cover"], d["cover_inv"], None] if d else [None] * 6))
+    s.table(["Компани", "Богино зээл", "Урт зээл", "Богиноны хувь", "(Мөнгө+авлага) ÷ богино", "(+бараа) ÷ богино", "Тайлбар"], rows,
+            [None, "bn", "bn", "pct", "x", "x"])
+
+    sec(15, "ХУВЬЦААНЫ ЭРСДЭЛИЙН ШАГНАЛ — ашгийн болон ногдол ашгийн өгөөж − хадгаламжийн хүү",
+        ["Компани", "Ашгийн өгөөж", "Ногдол ашгийн өгөөж", "Хадгаламжийн хүү", "Ашгийн шагнал", "Ногдол ашгийн шагнал"], "erp",
+        lambda d: [d["earn_yield"], d["div_yield"], d["deposit"], d["earn_prem"], d["div_prem"]], [None, "pct", "pct", "pct", "pct", "pct"],
+        "Сөрөг = банкны хадгаламж хувьцаанаас илүү өгөөжтэй (хувьцааны өсөлтийн боломжийг тооцоогүй).")
+
+    sec(16, "ЦЭВЭР БЭЛЭН МӨНГӨ ÷ ЗАХ ЗЭЭЛИЙН ҮНЭЛГЭЭ",
+        ["Компани", "Бэлэн мөнгө", "Хүүтэй өр", "Цэвэр бэлэн мөнгө", "Үнэлгээний хувь", "Хувьцаанд ногдох ₮", "Ханш ₮"], "netcash",
+        lambda d: [bn(d["cash"]), bn(d["debt"]), bn(d["net"]), d["ratio"], d["per_share"], d["price"]], [None, "bn", "bn", "bn", "pct", "n2", "n2"])
+
+    sec(17, "АШГИЙН ӨСӨЛТИЙН ЦУВАА БА ТОГТВОРТОЙ БАЙДАЛ",
+        ["Компани", "Давтамж", "Дараалсан өссөн үе", "Нийт харьцуулсан", "Өссөн үеийн хувь", "Цэвэр ашгийн ахиуцын σ", "Ахиуцын дундаж"], "streak",
+        lambda d: [{"year": "жил", "half": "хагас жил", "quarter": "улирал"}[d["kind"]], d["streak"], d["n"], d["up_share"], d["margin_sd"], d["margin_mean"]],
+        [None, None, "int", "int", "pct", "pct", "pct"])
     s.ws.freeze_panes = "B3"
 
 

@@ -354,7 +354,8 @@ def test_charts_build_two_pngs(tmp_path):
     res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
     out = charts.build(res, tmp_path)
     assert [p.name for p in out] == ["valuation.png", "ratios.png", "annual.png", "halfyear.png", "cost_1000.png",
-                                     "price_tags.png", "health_check.png", "seasonality.png", "ownership.png"]
+                                     "price_tags.png", "health_check.png", "seasonality.png", "ownership.png", "profit_bridge.png", "correlation.png", "insights.png",
+                                     "insights2_valuation.png", "insights3_quality.png", "insights4_growth.png"]
     assert all(p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and p.stat().st_size > 20000 for p in out)
 
 
@@ -371,9 +372,15 @@ def test_notify_summary_and_sends(tmp_path, monkeypatch):
     monkeypatch.setattr(n, "send_photos", lambda ps, caption="": sent.append(f"album{len(list(ps))}") or True)
     x = tmp_path / "a.xlsx"
     x.write_bytes(b"x")
+    latest = n.format_latest(res)
+    assert "MFC — 2026 Q3" in latest and "Q3" in latest and "YoY" in latest and len(latest) < 3900
     names = ["valuation.png", "ratios.png", "annual.png", "halfyear.png", "cost_1000.png"]
     assert n.notify(res, [tmp_path / nm for nm in names], x) is True
-    assert sent == ["text", "album2", "album3"]               # Excel Telegram-д явахгүй               # 1) харьцаа/үнэлгээ, 2) инфографик — тусдаа албом
+    assert sent == ["text", "text", "album2", "album3"]               # Excel Telegram-д явахгүй; 1) харьцаа/үнэлгээ, 2) инфографик — тусдаа албом
+    sent.clear()
+    many = names + ["a%d.png" % i for i in range(10)]                # 2 + 13 зураг -> албом 2, 10, 3 (Telegram ≤10)
+    assert n.notify(res, [tmp_path / nm for nm in many], x) is True
+    assert sent == ["text", "text", "album2", "album10", "album3"]
     monkeypatch.setattr(n, "send_telegram", lambda t: False)       # токен байхгүй: юу ч илгээхгүй
     sent.clear()
     assert n.notify(res, [], x) is False and sent == []
@@ -455,3 +462,101 @@ def test_monthly_returns_skips_untraded_months():
     mr = monthly_returns(bars)
     assert len(mr[3]) == 2 and len(mr[4]) == 2                       # 2025 оны 3, 4-р сарын өгөөж хасагдсан
     assert all(len(v) >= 2 for v in mr.values())
+
+
+@needs_data
+def test_latest_view_ytd_quarter_and_half():
+    from datetime import date as _d
+    from mse_analysis import periods as P
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 21), with_technical=False)
+    v = P.latest_view(res.companies["MFC"], "revenue")
+    assert v["label"] == "2026 Q3" and v["q_label"] == "Q3" and "h" not in v
+    assert abs(v["q"] - (v["ytd"] - P.value(res.companies["MFC"], P.Per("half", 2026, 1), "revenue"))) < 1e-6   # Q3 = 9 сар − 6 сар
+    t = P.latest_view(res.companies["TUM"], "revenue")
+    assert t["q"] is None and t["h_label"] == "H1" and t["h"] == t["ytd"]          # TUM-д Q1 алга → улирал тооцохгүй, хагас жил байна
+
+
+@needs_data
+def test_insights_bridge_sums_and_metrics_are_sane():
+    from datetime import date as _d
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 21), with_technical=False)
+    I = res.insights
+    for t in res.tickers:
+        b = I["bridge"][t]
+        if b:
+            assert abs(b["start"] + sum(b["steps"].values()) - b["end"]) < 1e-3, t            # гүүрийн нийлбэр = эцсийн ашиг
+    assert I["purity"]["MMX"]["share"] > 1                                                      # MMX: ашиг бүхэлдээ бусад орлогоос
+    assert I["debt"]["MMX"]["debt_free"] is True and I["tobin"]["TCK"] < 1
+    pc = I["pricecorr"]
+    assert all(abs(pc["corr"][(a, a)] - 1) < 1e-9 for a in pc["tickers"])
+    assert all(pc["corr"][(a, b)] == pc["corr"][(b, a)] for a in pc["tickers"] for b in pc["tickers"])
+    assert all(-1 <= v <= 1 for v in pc["corr"].values() if v is not None)
+
+
+def test_insights2_values_and_deposit_rate(tmp_path):
+    from datetime import date as _d
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
+    assert res.assumptions.deposit_rate == 0.14
+    I = res.insights2
+    assert set(I) == {"beneish", "liq", "divres", "season", "drawdown", "dol", "retention", "implied", "sustain", "wcap",
+                      "reaction", "sticky", "taxgap", "wall", "erp", "netcash", "streak"}
+    erp = I["erp"]["APU"]
+    assert erp["deposit"] == 0.14 and abs(erp["earn_prem"] - (erp["earn_yield"] - 0.14)) < 1e-12
+    assert abs(erp["div_prem"] - (erp["div_yield"] - 0.14)) < 1e-12
+    d = I["drawdown"]["GAZR"]
+    assert d["dd"] <= 0 and d["peak"] >= d["last"] and d["under_days"] >= 0
+    lq = I["liq"]["SUU"]
+    assert lq["net"] < 0 and lq["ratio"] is None                    # өр сэргээгдэх хөрөнгөөс их -> харьцаа хоосон
+    assert I["liq"]["APU"]["ratio"] == I["liq"]["APU"]["price"] / I["liq"]["APU"]["per_share"]
+    nc = I["netcash"]["MMX"]
+    assert nc["debt"] == 0 and nc["net"] == nc["cash"]
+    w = I["wall"]["MMX"]
+    assert w["debt_free"] is True
+    t = I["taxgap"]["APU"]
+    assert abs(t["gap"] - (t["effective"] - t["statutory"])) < 1e-12 and 0.10 <= t["statutory"] <= 0.25
+    b = I["beneish"]["APU"]
+    assert b["verdict"] == ("анхаарах" if b["m"] > -1.78 else "хэвийн")
+    s_ = I["season"]["TCK"]
+    assert s_["done"] is True and s_["forecast"] == s_["ytd"]
+
+
+def test_workbook_has_second_insights_sheet(tmp_path):
+    from datetime import date as _d
+    import openpyxl
+    from mse_analysis import workbook
+    from mse_analysis.engine import compute
+    res = compute(ROOT / "reports" / "FOOD mse.xlsx", ROOT / "inputs", _d(2026, 10, 19), with_technical=False)
+    out = workbook.build(res, tmp_path / "a.xlsx")
+    ws = openpyxl.load_workbook(out)["Онцгой үзүүлэлт 2"]
+    text = " ".join(str(c) for r in ws.iter_rows(values_only=True) for c in r if c is not None)
+    for k in ("Beneish", "ТАТАН БУУЛГАХ", "НОГДОЛ АШГИЙН НӨӨЦ", "ОРГИЛООС", "ХӨШҮҮРГИЙН", "ХУРИМТЛУУЛСАН", "СУУЛГАСАН", "ХАНГАГДАХ", "ЭРГЭЛТИЙН",
+              "ХАНШИЙН ХАРИУ", "НААЛДАМХАЙ", "ТАТВАРЫН", "ӨРИЙН ХАНА", "ЭРСДЭЛИЙН ШАГНАЛ", "ЦЭВЭР БЭЛЭН", "ЦУВАА"):
+        assert k in text, k
+    assert "14%" in text
+
+
+def test_brand_stamp_is_centered_and_mse_is_green(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    from mse_analysis import brand
+    fig = plt.figure(figsize=(16, 9))
+    brand.stamp(fig)
+    texts = {t.get_text(): t for t in fig.texts}
+    assert brand.TEXT_LEFT in texts and brand.TEXT_GREEN in texts
+    assert texts[brand.TEXT_GREEN].get_color() == brand.GREEN and brand.GREEN.lower().startswith("#1")
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    bb = [t.get_window_extent(rend) for t in texts.values()]
+    x0, x1 = min(b.x0 for b in bb), max(b.x1 for b in bb)
+    assert abs((x0 + x1) / 2 - fig.bbox.width / 2) < 3                # хэвтээ голд
+    assert abs((bb[0].y0 + bb[0].y1) / 2 - fig.bbox.height / 2) < 5   # босоо голд
+    out = tmp_path / "b.png"
+    fig.savefig(out, dpi=60, facecolor="white")
+    im = Image.open(out).convert("RGB")
+    green = sum(1 for px in im.getdata() if px[1] > px[0] + 40 and px[1] > px[2] + 20)
+    assert green > 100                                               # ногоон пиксель байна

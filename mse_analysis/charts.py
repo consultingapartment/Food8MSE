@@ -108,6 +108,8 @@ def _figure(res: Result, title: str, panels, out: Path) -> Path:
     fig.text(0.012, 0.935, f"{px} · сүүлийн тайлан: {_latest(res)} · ▸ = тэнхлэгээс хэтэрсэн утга · хөрөнгө оруулалтын зөвлөгөө биш",
              fontsize=9, color=MUTED, ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.92), h_pad=2.2, w_pad=2.0)
+    from . import brand
+    brand.stamp(fig)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130, facecolor="white")
     plt.close(fig)
@@ -120,7 +122,7 @@ def _latest(res: Result) -> str:
 
 
 def build(res: Result, out_dir: Path) -> list[Path]:
-    """`valuation.png`, `ratios.png` + инфографикууд (10 хүртэл PNG). Буцаах: Telegram-д илгээх дарааллаар."""
+    """`valuation.png`, `ratios.png` + инфографикууд (13 PNG; Telegram албом тус бүр ≤10). Буцаах: Telegram-д илгээх дарааллаар."""
     from . import infographics
     val, fin = _panels(res)
     d = Path(out_dir)
@@ -130,5 +132,6 @@ def build(res: Result, out_dir: Path) -> list[Path]:
     ]
     info = {p.name: p for p in infographics.build(res, d)}
     order = ["annual.png", "halfyear.png", "cost_1000.png", "price_tags.png", "health_check.png",
-             "seasonality.png", "ownership.png"]
+             "seasonality.png", "ownership.png", "profit_bridge.png", "correlation.png", "insights.png",
+             "insights2_valuation.png", "insights3_quality.png", "insights4_growth.png"]
     return main + [info[n] for n in order if n in info]

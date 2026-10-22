@@ -27,6 +27,8 @@ class Result:
     target_year: int = 0
     as_of_prices: Optional[date] = None
     warnings: list[str] = field(default_factory=list)
+    insights: dict = field(default_factory=dict)
+    insights2: dict = field(default_factory=dict)
 
 
 def compute(reports: Path, inputs_dir: Path, today: date, a: Assumptions | None = None, w: Weights | None = None,
@@ -101,6 +103,11 @@ def compute(reports: Path, inputs_dir: Path, today: date, a: Assumptions | None 
         mg = sum(g for _, _, g in ok) / len(ok)
         res.bcg = {t: valuation.bcg_class(c, g, mc, mg) for t, c, g in ok}
         res.bcg["_mean_cap"], res.bcg["_mean_growth"] = mc, mg      # type: ignore[assignment]
+
+    from . import insights
+    res.insights = insights.compute_all(res)
+    from . import insights2
+    res.insights2 = insights2.compute_all(res)
 
     # өгөгдлийн сануулга
     for t in tks:
