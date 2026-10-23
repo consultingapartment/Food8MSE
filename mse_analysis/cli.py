@@ -75,6 +75,9 @@ def main(argv: list[str] | None = None) -> int:
             log.error("Ханш татаж чадсангүй: %s", e)
             _alert(args, f"❌ МХБ хүнс — {today}: ханш татаж чадсангүй ({type(e).__name__})")
             return 1
+        if not history and len(live.STALE) == len(live.SECURITY_IDS):          # бүх хуудас өмнөх өдрийн ханштай
+            log.info("%s: арилжаа болоогүй (баяр, амралт) — ханш, шинжилгээ шинэчлэхгүй", today)
+            return 0
         if not history:
             log.error("Ханшийн мөр олдсонгүй — татсан хуудсыг %s-д хадгалсан, шалгана уу", args.inputs / "_raw")
             _alert(args, f"❌ МХБ хүнс — {today}: ханшийн мөр олдсонгүй (сайтын бүтэц өөрчлөгдсөн байж магадгүй), файл өөрчлөгдөөгүй")
