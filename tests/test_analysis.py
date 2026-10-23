@@ -293,21 +293,31 @@ def test_cli_subset_and_errors(tmp_path):
 
 # ------------------------------------------------------------------ live (open.mse.mn): задлагчийн механик
 # АНХААР: HTML жишээ нь БОДИТ хуудас биш, бүтцийг дуурайсан зохиомол. Бодит хуудсыг GitHub Actions дээр шалгана.
-HTML = """<table><thead><tr><th>Огноо</th><th>Нээлтийн ханш</th><th>Хаалтын ханш</th><th>Өдрийн хязгаар</th>
-<th>Ширхэг</th><th>Үнийн дүн</th><th>Хэлцэл</th></tr></thead><tbody>
-<tr><td>2026-10-16</td><td>1,100.00</td><td>1,110.50</td><td>1,095.00 - 1,120.00</td><td>1,000</td><td>1,110,500.00</td><td>3</td></tr>
-<tr><td>2026-10-15</td><td>1,097.00</td><td>1,099.00</td><td>1,095.00 - 1,100.00</td><td>14,474</td><td>15,897,712.00</td><td>9</td></tr>
-<tr><td>2026-10-14</td><td>0</td><td>0</td><td>0 - 0</td><td>0</td><td>0</td><td>0</td></tr>
+HTML = """<table><tbody>
+<tr><td>Огноо</td><td>2026-10-16</td></tr>
+<tr><td>Нээлтийн ханш</td><td>1,100.00</td></tr>
+<tr><td>Хаалтын ханш</td><td>1,110.50</td></tr>
+<tr><td>Өмнөх өдрийн хаалтын ханш</td><td>1,099.00</td></tr>
+<tr><td>Өдрийн дээд ханш</td><td>1,120.00</td></tr>
+<tr><td>Өдрийн доод ханш</td><td>1,095.00</td></tr>
+<tr><td>Хэлцлийн тоо ширхэг</td><td>1,000</td></tr>
+<tr><td>Үнийн дүн</td><td>1,110,500.00</td></tr>
 </tbody></table>"""
 
 
-def test_live_parse_history_reads_table():
+def test_live_parse_history_reads_key_value_table():
     from mse_analysis import live
-    bars = live.parse_history(HTML)
-    assert [b.day for b in bars] == [date(2026, 10, 15), date(2026, 10, 16)]
-    b = bars[-1]
+    bars = live.parse_history(HTML, date(2026, 10, 23))
+    assert len(bars) == 1
+    b = bars[0]
+    assert b.day == date(2026, 10, 16)                                  # хуудсан дээрх огноо (өглөө өмнөх өдрийг харуулдаг)
     assert (b.open, b.close, b.low, b.high, b.qty, b.value) == (1100.0, 1110.5, 1095.0, 1120.0, 1000.0, 1110500.0)
-    assert live.parse_history("<p>no table</p>") == []
+    only_close = "<table><tr><td>Хаалтын ханш</td><td>50</td></tr><tr><td>Өмнөх хаалтын ханш</td><td>40</td></tr></table>"
+    c = live.parse_history(only_close, date(2026, 10, 23))[0]
+    assert c.day == date(2026, 10, 23) and c.close == 50 and c.open == 50 and c.qty == 0
+    assert live.parse_history("<p>no table</p>", date(2026, 10, 23)) == []
+    zero = "<table><tr><td>Хаалтын ханш</td><td>0</td></tr></table>"
+    assert live.parse_history(zero, date(2026, 10, 23)) == []
 
 
 def test_live_fetch_uses_security_urls(tmp_path):
@@ -324,24 +334,49 @@ def test_live_fetch_uses_security_urls(tmp_path):
     assert (tmp_path / "raw" / "APU.html").exists()
 
 
+def test_live_fetch_takes_only_today_and_skips_holiday(tmp_path):
+    from mse_analysis import live
+
+    class FakeClient:
+        def text(self, u): return HTML                              # хуудас 2026-10-16-ны ханштай
+        def sleep(self): pass
+    assert live.fetch(None, date(2026, 10, 16), FakeClient())["APU"][0].day == date(2026, 10, 16)
+    assert live.STALE == []
+    assert live.fetch(None, date(2026, 10, 19), FakeClient()) == {}   # өнөөдөр (10-19) арилжаа болоогүй -> хуучин ханшийг авахгүй
+    assert sorted(live.STALE) == sorted(live.SECURITY_IDS)
+
+
+def test_cron_is_weekday_1500_ub():
+    from pathlib import Path
+    y = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "prices.yml").read_text("utf-8")
+    assert 'cron: "0 7 * * 1-5"' in y                                  # 07:00 UTC = 15:00 Улаанбаатар, Даваа–Баасан
+
+
 def test_live_apply_merges_history_and_updates_market(tmp_path):
     from mse_analysis import live
     from mse_analysis.prices import read_csv
     (tmp_path / "prices").mkdir()
     (tmp_path / "market.csv").write_text("ticker,price,price_date,shares,dps,dps_year\nAPU,967.14,2026-07-20,1000,130,2025\nTUM,370,2026-07-20,1,1,2025\n")
     (tmp_path / "prices" / "APU.csv").write_text("date,open,high,low,close,qty,value\n2026-10-15,1,1,1,1,1,1\n")
-    h = {"APU": live.parse_history(HTML)}
+    h = {"APU": live.parse_history(HTML, date(2026, 10, 16))}
     assert "+1 шинэ өдөр" in live.apply(h, tmp_path)[0]
     text = (tmp_path / "market.csv").read_text()
     assert "APU,1110.5,2026-10-16,1000,130,2025" in text and "TUM,370,2026-07-20" in text
     bars = read_csv(tmp_path / "prices" / "APU.csv")
-    assert [b.close for b in bars] == [1099.0, 1110.5]
+    assert [b.close for b in bars] == [1.0, 1110.5]
+    # ширхэг, дүнгүй шинэ мөр байгаа өдрийн ширхэг, дүнг 0-ээр дарахгүй
+    (tmp_path / "prices" / "APU.csv").write_text("date,open,high,low,close,qty,value\n2026-10-16,1,1,1,1,500,700\n")
+    nz = "<table><tr><td>Хаалтын ханш</td><td>1110.5</td></tr></table>"
+    live.apply({"APU": live.parse_history(nz, date(2026, 10, 16))}, tmp_path)
+    b = read_csv(tmp_path / "prices" / "APU.csv")[-1]
+    assert (b.close, b.qty, b.value) == (1110.5, 500.0, 700.0)
 
 
 def test_fetch_prices_fails_cleanly_without_touching_files(tmp_path, monkeypatch):
     from mse_analysis import live
     (tmp_path / "market.csv").write_text("ticker,price,price_date,shares,dps,dps_year\nAPU,1,2026-07-20,1,1,2025\n")
     monkeypatch.setattr(live, "fetch", lambda raw, today, client=None: {})
+    monkeypatch.setattr(live, "STALE", [])                            # өмнөх тестийн үлдэгдэл төлөвөөс хамаарахгүй
     assert main(["--reports", str(ROOT / "reports" / "FOOD mse.xlsx"), "--inputs", str(tmp_path), "--fetch-prices", "--charts", str(tmp_path / "png")]) == 1
     assert "APU,1,2026-07-20" in (tmp_path / "market.csv").read_text()
 
