@@ -69,49 +69,60 @@ def _num(s: str) -> Optional[float]:
         return None
 
 
+def _find(info: dict[str, float], *keys: str, skip: tuple[str, ...] = ("өмнөх",)) -> Optional[float]:
+    for k, v in info.items():
+        if any(x in k for x in keys) and not any(x in k for x in skip):
+            return v
+    return None
+
+
 def parse_history(html: str, today: date) -> list[Bar]:
-    """'Арилжааны мэдээлэл' дэд табын 2 баганатай хүснэгтээс тухайн өдрийн ханшийг задлана."""
+    """'Арилжааны мэдээлэл' дэд табын 2 баганатай (нэр | утга) хүснэгтээс сүүлийн арилжааны өдрийн ханшийг задлана.
+
+    Хуудсан дээр огноо (YYYY-MM-DD) байвал тэр өдрөөр, байхгүй бол `today`-ээр бичнэ (өглөө, амралтын өдөр ажиллахад
+    хуудас өмнөх арилжааны өдрийг харуулдаг тул огноо олдвол түүнийг илүүд үзнэ). Дээд/доод ханш, тоо ширхэг, үнийн дүн олдвол авна."""
     p = _Rows()
     p.feed(html)
-    
+
     info: dict[str, float] = {}
+    day: Optional[date] = None
     for cells in p.rows:
-        if len(cells) >= 2:
-            k = cells[0].strip().lower()
-            v = _num(cells[1])
-            if v is not None:
-                info[k] = v
+        if len(cells) < 2:
+            continue
+        k = cells[0].strip().lower()
+        v = _num(cells[1])
+        if v is not None:
+            info[k] = v
+        elif day is None and "огноо" in k and _DATE.match(cells[1].strip()):
+            try:
+                d = date.fromisoformat(cells[1].strip()[:10])
+                day = d if d <= today else None
+            except ValueError:
+                pass
 
-    cl = None
-    op = None
-    for k, v in info.items():
-        if "хаалтын ханш" in k and "өмнөх" not in k:
-            cl = v
-        elif "нээлтийн ханш" in k:
-            op = v
-
+    cl = _find(info, "хаалтын ханш")
     if not cl or cl <= 0:
         return []
+    op = _find(info, "нээлтийн ханш") or cl
+    hi = _find(info, "дээд ханш", "өдрийн дээд") or max(op, cl)
+    lo = _find(info, "доод ханш", "өдрийн доод") or min(op, cl)
+    qty = _find(info, "хэлцлийн тоо", "арилжаалагдсан", "тоо ширхэг") or 0.0
+    val = _find(info, "үнийн дүн", "арилжааны дүн") or 0.0
+    return [Bar(day=day or today, open=op, high=max(hi, op, cl), low=min(lo, op, cl), close=cl, qty=qty, value=val)]
 
-    if not op:
-        op = cl
 
-    bar = Bar(
-        day=today,
-        open=op,
-        high=max(op, cl),
-        low=min(op, cl),
-        close=cl,
-        qty=0.0,
-        value=0.0
-    )
-    return [bar]
+#: Сүүлийн `fetch` дуудлагад хуудасны огноо нь `today`-ээс өөр (тухайн өдөр арилжаа болоогүй) байсан тикерүүд
+STALE: list[str] = []
 
 
 def fetch(raw_dir: Optional[Path], today: date, client: Optional[Client] = None) -> dict[str, list[Bar]]:
-    """8 тикерийн хуудсыг татаж задлана. Тикер -> [Bar]."""
+    """8 тикерийн хуудсыг татаж задлана. Тикер -> [Bar].
+
+    ЗӨВХӨН `today`-ийн хаалтыг авна: хуудсан дээрх огноо өөр өдөр бол (тухайн өдөр арилжаа болоогүй, баяр ёслол)
+    хуучин ханшийг шинэ өдөр гэж бичихгүй, алгасаж `STALE`-д тэмдэглэнэ."""
     client = client or Client(base_url=BASE, timeout=40)
     out: dict[str, list[Bar]] = {}
+    STALE.clear()
     for t in TICKERS:
         if t not in SECURITY_IDS:
             continue
@@ -125,7 +136,12 @@ def fetch(raw_dir: Optional[Path], today: date, client: Optional[Client] = None)
             (raw_dir / f"{t}.html").write_text(html, "utf-8")
         
         bars = parse_history(html, today)
-        log.info("%s: сүүлийн хаалт %s", t, f"{bars[0].close:g} ({bars[0].day})" if bars else "—")
+        if bars and bars[0].day != today:
+            log.info("%s: %s өдөр арилжаа болоогүй (хуудас %s-ийн ханш) — алгасав", t, today, bars[0].day)
+            STALE.append(t)
+            bars = []
+        else:
+            log.info("%s: хаалт %s", t, f"{bars[0].close:g} ({bars[0].day})" if bars else "—")
         if bars:
             out[t] = bars
         client.sleep()
@@ -151,7 +167,11 @@ def apply(history: dict[str, list[Bar]], inputs: Path) -> list[str]:
         pp = inputs / "prices" / f"{t}.csv"
         bars = {b.day: b for b in (read_csv(pp) if pp.exists() else [])}
         added = sum(1 for b in new if b.day not in bars)
-        bars.update({b.day: b for b in new})
+        for b in new:                                    # өдөр аль хэдийн байвал (жишээ нь МХБ-ийн түүхээс) ширхэг, дүнг 0-ээр дарахгүй
+            old = bars.get(b.day)
+            if old and not b.qty and not b.value:
+                b = Bar(b.day, b.open, max(b.high, old.high), min(b.low, old.low), b.close, old.qty, old.value)
+            bars[b.day] = b
         merged = [bars[d] for d in sorted(bars)]
         write_csv(pp, merged)
         last = merged[-1]
