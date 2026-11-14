@@ -9,39 +9,43 @@ from mse_financials.cli import main
 from mse_financials.models import Period
 
 
-def test_collection_dates_are_deadline_plus_14_days():
+def test_collection_dates_are_semi_annual_and_annual():
     got = {dl.name: when for when, dl in schedule.collection_days(2026)}
-    assert got["Жилийн санхүүгийн тайлан"] == date(2026, 2, 24)   # 2/10 + 14
-    assert got["1-р улирлын тайлан"] == date(2026, 5, 14)
-    assert got["Хагас жилийн тайлан"] == date(2026, 8, 3)         # 7/20 + 14
-    assert got["3-р улирлын тайлан"] == date(2026, 11, 13)
+    assert len(got) == 2
+    assert got["Жилийн санхүүгийн тайлан"] == date(2026, 4, 1)
+    assert got["Хагас жилийн тайлан"] == date(2026, 8, 15)
 
 
 def test_is_collection_day():
-    assert schedule.is_collection_day(date(2026, 8, 3)).name == "Хагас жилийн тайлан"
-    assert schedule.is_collection_day(date(2026, 8, 4)) is None
+    assert schedule.is_collection_day(date(2026, 4, 1)).name == "Жилийн санхүүгийн тайлан"
+    assert schedule.is_collection_day(date(2026, 8, 15)).name == "Хагас жилийн тайлан"
+    assert schedule.is_collection_day(date(2026, 8, 16)) is None
     assert schedule.is_collection_day(date(2026, 7, 20)) is None  # хуулийн хугацаа өөрөө биш
 
 
 @pytest.mark.parametrize("day,expected", [
-    (date(2026, 8, 2), Period(2025, 4)),   # H1-ийн 14 хоног дуусаагүй -> хамгийн сүүлийн заавал тайлан нь жилийнх
-    (date(2026, 8, 3), Period(2026, 2)),
-    (date(2026, 10, 10), Period(2026, 2)),  # Q3 (заавал биш) тооцогдохгүй
-    (date(2027, 2, 23), Period(2026, 2)),
-    (date(2027, 2, 24), Period(2026, 4)),   # жилийн тайлан: тайлант жил = өмнөх жил
+    (date(2026, 3, 31), Period(2025, 2)),   # 4/1 болоогүй -> өмнөх оны хагас жил
+    (date(2026, 4, 1), Period(2025, 4)),    # 4/1 -> өмнөх оны жилийн эцсийн тайлан
+    (date(2026, 8, 14), Period(2025, 4)),   # 8/15 болоогүй -> хамгийн сүүлийнх нь жилийн эцэс
+    (date(2026, 8, 15), Period(2026, 2)),   # 8/15 -> тухайн оны хагас жилийн тайлан
+    (date(2027, 3, 31), Period(2026, 2)),
+    (date(2027, 4, 1), Period(2026, 4)),    # жилийн тайлан: тайлант жил = өмнөх жил
 ])
 def test_latest_mandatory(day, expected):
     assert schedule.latest_mandatory(day)[0] == expected
 
 
-def test_due_periods_sorted_and_include_optional():
-    periods = [p for p, _ in schedule.due_periods(date(2026, 11, 13))]
-    assert periods == sorted(periods) and Period(2026, 3) in periods and Period(2025, 4) in periods
+def test_due_periods_sorted_and_only_h1_and_annual():
+    periods = [p for p, _ in schedule.due_periods(date(2026, 8, 15))]
+    assert periods == sorted(periods)
+    assert Period(2026, 2) in periods and Period(2025, 4) in periods
+    assert all(p.quarter in (2, 4) for p in periods)
 
 
 def test_next_collection_wraps_to_next_year():
-    assert schedule.next_collection(date(2026, 11, 13))[0] == date(2027, 2, 24)
-    assert schedule.next_collection(date(2026, 10, 10))[0] == date(2026, 11, 13)
+    assert schedule.next_collection(date(2026, 4, 1))[0] == date(2026, 8, 15)
+    assert schedule.next_collection(date(2026, 8, 15))[0] == date(2027, 4, 1)
+    assert schedule.next_collection(date(2026, 10, 10))[0] == date(2027, 4, 1)
 
 
 def test_workflow_cron_matches_schedule():
@@ -62,4 +66,5 @@ def test_cli_if_due_skips_other_days(capsys, tmp_path):
 def test_cli_show_schedule(capsys):
     assert main(["--show-schedule", "--date", "2026-10-10"]) == 0
     out = capsys.readouterr().out
-    assert "08-03" in out and "Дараагийн цуглуулалт: 2026-11-13" in out
+    assert "04-01" in out and "08-15" in out
+    assert "Дараагийн цуглуулалт: 2027-04-01" in out
