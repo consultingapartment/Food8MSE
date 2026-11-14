@@ -2,11 +2,12 @@ name: collect-reports
 
 on:
   schedule:
-    - cron: "0 2 24 2 *"
-    - cron: "0 2 14 5 *"
-    - cron: "0 2 3 8 *"
-    - cron: "0 2 13 11 *"
-    - cron: "0 3 1 * *"        # keepalive (60 хоног идэвхгүй repo-ийн хуваарийг унтраахаас сэргийлнэ)
+    # Жил бүрийн 4-р сарын 1-ний 10:00 цагт (Улаанбаатар, UTC+8) — Жилийн эцсийн тайлан
+    - cron: "0 2 1 4 *"
+    # Жил бүрийн 8-р сарын 15-ны 10:00 цагт (Улаанбаатар, UTC+8) — Хагас жилийн тайлан
+    - cron: "0 2 15 8 *"
+    # keepalive (60 хоног идэвхгүй repo-ийн хуваарийг унтраахаас сэргийлнэ)
+    - cron: "0 3 1 * *"
   workflow_dispatch:
 
 permissions:
@@ -14,6 +15,7 @@ permissions:
 
 jobs:
   collect:
+    if: github.event.schedule != '0 3 1 * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
