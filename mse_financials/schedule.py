@@ -1,11 +1,9 @@
-"""Тайлан цуглуулах хуваарь: хуулийн хугацаа + 14 хоног.
+"""Тайлан цуглуулах хуваарь: Жилийн эцэс (04-01) ба Хагас жил (08-15).
 
-Эх сурвалж: МХБ-ийн "Мэдээлэл ил тод байлгах дүрэм" (Disclosure and Transparency Rules)
-  - 3.2: хагас жилийн санхүүгийн тайлан — тайлант үеэс дараагийн сарын 20-ны дотор
-  - 3.2: жилийн санхүүгийн тайлан (IFRS) — дараа жилийн 2 сарын 10-ны дотор
-Улирлын (Q1, Q3) тайланг дүрмээр тусад нь заагаагүй; ихэнх компани сайн дураар ирүүлдэг
-тул тооцоолсон хугацаа (`mandatory=False`)-аар оруулсан. Хэрэггүй бол жагсаалтаас хасаж,
-`.github/workflows/collect.yml` дахь cron мөрийг мөн хасна.
+Эх сурвалж: Нягтлан бодох бүртгэлийн тухай хуулийн 10.3 ба МХБ-ийн "Мэдээлэл ил тод байлгах дүрэм"
+  - 3.2: хагас жилийн санхүүгийн тайлан — 7 сарын 20-ны дотор (цуглуулах өдөр: 8 сарын 15)
+  - 3.2: жилийн санхүүгийн тайлан (IFRS) — дараа жилийн 2 сарын 10-ны дотор (цуглуулах өдөр: 4 сарын 1)
+Улирлын (Q1, Q3) тайлан нь заавал гаргах тайлан биш тул хассан.
 """
 from __future__ import annotations
 
@@ -14,22 +12,26 @@ from datetime import date, timedelta
 
 from .models import Period
 
-GRACE_DAYS = 14  # хуулийн хугацаанаас хойш хүлээх хоног (хоцорсон ирүүлэлтэд зай өгнө)
+GRACE_DAYS = 14  # collect_month/collect_day заагаагүй үед ашиглах анхдагч хоног
 
 
 @dataclass(frozen=True)
 class Deadline:
     name: str
-    month: int          # ирүүлэх сар
-    day: int            # ирүүлэх өдөр
-    quarter: int        # тайлангийн үе (1..4)
-    year_shift: int     # тайлант жил = ирүүлсэн жил + year_shift (жилийн тайлан: -1)
-    mandatory: bool     # дүрмээр заавал эсэх
+    month: int                      # хуулийн хугацааны сар
+    day: int                        # хуулийн хугацааны өдөр
+    quarter: int                    # тайлангийн үе (1..4)
+    year_shift: int                 # тайлант жил = ирүүлсэн жил + year_shift (жилийн тайлан: -1)
+    mandatory: bool = True          # дүрмээр заавал эсэх
+    collect_month: int | None = None  # тайлан цуглуулах сар
+    collect_day: int | None = None    # тайлан цуглуулах өдөр
 
     def due(self, filing_year: int) -> date:
         return date(filing_year, self.month, self.day)
 
     def collect_on(self, filing_year: int) -> date:
+        if self.collect_month is not None and self.collect_day is not None:
+            return date(filing_year, self.collect_month, self.collect_day)
         return self.due(filing_year) + timedelta(days=GRACE_DAYS)
 
     def period(self, filing_year: int) -> Period:
@@ -37,10 +39,8 @@ class Deadline:
 
 
 DEADLINES = (
-    Deadline("Жилийн санхүүгийн тайлан", 2, 10, 4, -1, True),
-    Deadline("1-р улирлын тайлан", 4, 30, 1, 0, False),
-    Deadline("Хагас жилийн тайлан", 7, 20, 2, 0, True),
-    Deadline("3-р улирлын тайлан", 10, 30, 3, 0, False),
+    Deadline("Жилийн санхүүгийн тайлан", 2, 10, 4, -1, True, 4, 1),
+    Deadline("Хагас жилийн тайлан", 7, 20, 2, 0, True, 8, 15),
 )
 
 
@@ -56,7 +56,7 @@ def is_collection_day(day: date) -> Deadline | None:
 
 
 def due_periods(day: date) -> list[tuple[Period, Deadline]]:
-    """`day` байдлаар (хугацаа + 14 хоног) өнгөрсөн, тайлан ирсэн байх ёстой бүх үе, хуучнаас шинэ рүү."""
+    """`day` байдлаар цуглуулах хугацаа өнгөрсөн, тайлан ирсэн байх ёстой бүх үе, хуучнаас шинэ рүү."""
     out = []
     for year in (day.year - 1, day.year):
         for dl in DEADLINES:
@@ -79,10 +79,12 @@ def next_collection(day: date) -> tuple[date, Deadline]:
 
 
 def describe(day: date) -> str:
-    lines = [f"Тайлан цуглуулах хуваарь (хуулийн хугацаа + {GRACE_DAYS} хоног):"]
+    lines = ["Тайлан цуглуулах хуваарь (Жилийн эцэс ба Хагас жил):"]
     for when, dl in collection_days(day.year):
-        lines.append(f"  {when:%m-%d}  {dl.name:<26} хуулийн хугацаа {dl.due(day.year):%m-%d}"
-                     + ("" if dl.mandatory else "  (заавал биш)"))
+        lines.append(
+            f"  {when:%m-%d}  {dl.name:<26} хуулийн хугацаа {dl.due(day.year):%m-%d}"
+            + ("" if dl.mandatory else "  (заавал биш)")
+        )
     when, dl = next_collection(day)
     lines.append(f"Дараагийн цуглуулалт: {when.isoformat()} — {dl.name}")
     return "\n".join(lines)
